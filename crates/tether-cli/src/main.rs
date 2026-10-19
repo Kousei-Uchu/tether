@@ -10,6 +10,7 @@ use tether_core::{
     identity::Identity,
     pairing::PairingOffer,
     paths::{default_device_name, Paths},
+    permissions::PermissionSet,
     proto::DEFAULT_PORT,
     session::{accept, connect, ClientMode, HostConfig, Outcome},
     trust::TrustStore,
@@ -50,6 +51,10 @@ enum Cmd {
         /// How long the pairing code stays valid.
         #[arg(long, default_value_t = 300)]
         pair_ttl_secs: u64,
+        /// What the device that pairs with this code may do: any of view, input, media,
+        /// power, files (comma separated), or `all`. Change it later with `peers grant`.
+        #[arg(long, default_value = "view")]
+        grant: PermissionSet,
     },
     /// Pair with a host that is running `listen --pair`.
     Pair {
@@ -77,6 +82,17 @@ enum PeersCmd {
     /// Remove by name or fingerprint prefix.
     Remove {
         query: String,
+    },
+    /// Add permissions to a paired device, e.g. `peers grant laptop input,media`.
+    Grant {
+        /// Name or fingerprint prefix.
+        query: String,
+        perms: PermissionSet,
+    },
+    /// Take permissions away from a paired device, e.g. `peers revoke laptop power`.
+    Revoke {
+        query: String,
+        perms: PermissionSet,
     },
 }
 
@@ -138,7 +154,8 @@ async fn run() -> Result<()> {
             bind,
             pair,
             pair_ttl_secs,
-        } => listen(ctx, bind, pair, pair_ttl_secs).await,
+            grant,
+        } => listen(ctx, bind, pair, pair_ttl_secs, grant).await,
         Cmd::Pair { addr, code } => pair_with(ctx, &addr, code).await,
         Cmd::Connect { addr, pings } => connect_to(ctx, &addr, pings).await,
         Cmd::Peers { action } => peers(ctx, action),
@@ -160,7 +177,13 @@ fn peers(ctx: Ctx, action: PeersCmd) -> Result<()> {
                 println!("no paired devices");
             }
             for p in store.peers() {
-                println!("{:<24} {:<8} {}", p.name, p.platform, p.fingerprint());
+                println!(
+                    "{:<24} {:<8} {:<24} {}",
+                    p.name,
+                    p.platform,
+                    p.permissions,
+                    p.fingerprint()
+                );
             }
         }
         PeersCmd::Remove { query } => {
@@ -170,22 +193,52 @@ fn peers(ctx: Ctx, action: PeersCmd) -> Result<()> {
             }
             println!("removed {n} device(s)");
         }
+        PeersCmd::Grant { query, perms } => {
+            change(&mut store, &query, |p| p.union(perms))?;
+        }
+        PeersCmd::Revoke { query, perms } => {
+            change(&mut store, &query, |p| p.minus(perms))?;
+        }
     }
     Ok(())
 }
 
-async fn listen(ctx: Ctx, bind: String, pair: bool, ttl_secs: u64) -> Result<()> {
+/// Applies a permission change and prints the result. A running `tether listen` picks the
+/// change up on the device's next message, so no restart is needed.
+fn change(
+    store: &mut TrustStore,
+    query: &str,
+    f: impl Fn(PermissionSet) -> PermissionSet,
+) -> Result<()> {
+    let n = store.change_permissions(query, f)?;
+    if n == 0 {
+        bail!("no paired device matches {query:?}");
+    }
+    for p in store.peers().iter().filter(|p| p.matches(query)) {
+        println!("{} now has: {}", p.name, p.permissions);
+    }
+    Ok(())
+}
+
+async fn listen(
+    ctx: Ctx,
+    bind: String,
+    pair: bool,
+    ttl_secs: u64,
+    grant: PermissionSet,
+) -> Result<()> {
     let trust = TrustStore::load(ctx.paths.trust_file())?;
     let pairing = Arc::new(Mutex::new(None));
     println!("device       {}", ctx.name);
     println!("fingerprint  {}", ctx.identity.fingerprint());
     if pair {
-        let offer = PairingOffer::new(Duration::from_secs(ttl_secs));
+        let offer = PairingOffer::new(Duration::from_secs(ttl_secs)).with_grant(grant);
         println!(
             "pairing code {}   (valid {} minutes, single use)",
             offer.display_code(),
             ttl_secs.div_ceil(60)
         );
+        println!("will grant   {grant}");
         *pairing.lock().expect("pairing lock") = Some(offer);
     }
     let host = Arc::new(HostConfig {
@@ -216,8 +269,8 @@ async fn listen(ctx: Ctx, bind: String, pair: bool, ttl_secs: u64) -> Result<()>
                     match accept(stream, &host).await {
                         Ok(Outcome::Authenticated(session)) => {
                             let peer = session.peer.clone();
-                            tracing::info!(%remote, peer = %peer.name, fingerprint = %peer.fingerprint(), "session opened");
-                            match session.serve().await {
+                            tracing::info!(%remote, peer = %peer.name, fingerprint = %peer.fingerprint(), permissions = %session.permissions, "session opened");
+                            match session.serve(&host).await {
                                 Ok(()) => tracing::info!(peer = %peer.name, "session closed"),
                                 Err(e) => tracing::warn!(peer = %peer.name, "session ended: {e}"),
                             }
@@ -292,6 +345,7 @@ async fn connect_to(ctx: Ctx, addr: &str, pings: u32) -> Result<()> {
         session.peer.platform,
         session.peer.fingerprint()
     );
+    println!("allowed to   {}", session.permissions);
     for i in 0..pings {
         let rtt = session.ping(u64::from(i)).await?;
         println!("ping {}: {:.2} ms", i + 1, rtt.as_secs_f64() * 1000.0);

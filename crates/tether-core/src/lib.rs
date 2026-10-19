@@ -4,6 +4,7 @@ pub mod channel;
 pub mod identity;
 pub mod pairing;
 pub mod paths;
+pub mod permissions;
 pub mod session;
 pub mod trust;
 

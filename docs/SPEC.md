@@ -6,10 +6,10 @@ the same commit as the code it describes.
 
 | Field | Value |
 | --- | --- |
-| Status | Milestone 1 of 7 complete |
-| Protocol version | 1 |
+| Status | Milestone 2 of 8 complete |
+| Protocol version | 2 |
 | Targets | Windows 10+, macOS 13+, iOS 17+ |
-| Core language | Rust (agent, protocol, crypto), SwiftUI (iPhone), Tauri (desktop UI) |
+| Core language | Rust (agent, protocol, crypto), SwiftUI (iPhone), Electron (desktop UI) |
 
 ## 1. Goals and non-goals
 
@@ -47,16 +47,17 @@ Legend: `[x]` done, `[~]` in progress, `[ ]` not started.
 | --- | --- | --- | --- |
 | R-1 | Devices pair once with a one-time code and public-key identity | M1 | [x] |
 | R-2 | All traffic is mutually authenticated and encrypted | M1 | [x] |
-| R-3 | Remote view of one display, PC to Mac and Mac to PC | M2 | [ ] |
-| R-4 | Mouse and keyboard injection on both OSes | M2 | [ ] |
-| R-5 | System audio streaming, both directions | M3 | [ ] |
-| R-6 | iPhone trackpad, keyboard and media controller | M4 | [ ] |
-| R-7 | Wake from sleep through an always-on LAN relay | M5 | [ ] |
-| R-8 | One window per remote display, with snapping and saved layout | M6 | [ ] |
-| R-9 | Cursor flows across screen edges between machines | M6 | [ ] |
-| R-10 | Clipboard sync and file transfer | M7 | [ ] |
-| R-11 | Privacy mode, virtual display, adaptive bitrate | M7 | [ ] |
-| R-12 | Notification forwarding, macros, system stats | M7 | [ ] |
+| R-3 | Remote view of one display, PC to Mac and Mac to PC | M3 | [ ] |
+| R-4 | Mouse and keyboard injection on both OSes | M3 | [ ] |
+| R-5 | System audio streaming, both directions | M4 | [ ] |
+| R-6 | iPhone trackpad, keyboard and media controller | M5 | [ ] |
+| R-7 | Wake from sleep through an always-on LAN relay | M6 | [ ] |
+| R-8 | One window per remote display, with snapping and saved layout | M7 | [ ] |
+| R-9 | Cursor flows across screen edges between machines | M7 | [ ] |
+| R-10 | Clipboard sync and file transfer | M8 | [ ] |
+| R-11 | Privacy mode, virtual display, adaptive bitrate | M8 | [ ] |
+| R-12 | Notification forwarding, macros, system stats | M8 | [ ] |
+| R-13 | Per-device permissions, enforced by the host and changeable while connected | M2 | [x] |
 
 ## 4. Architecture
 
@@ -65,11 +66,19 @@ Legend: `[x]` done, `[~]` in progress, `[ ]` not started.
 | Component | Responsibility | Tech |
 | --- | --- | --- |
 | Host agent | Capture screen and audio, encode, inject input, run power and settings commands | Rust, one core with thin per-OS modules |
-| Desktop client | Render remote displays as windows, manage layout | Tauri or Electron |
+| Desktop client | Render remote displays as windows, manage layout | Electron |
 | iPhone client | Controller UI, optional viewer | SwiftUI |
 | Wake relay | Always-on LAN device that turns a wake request into a magic packet | Rust on a Raspberry Pi |
 | `tether-proto` | Wire types, shared by every component | Rust crate, ported to Swift later |
 | `tether-core` | Identity, trust store, pairing, secure channel | Rust crate |
+
+### 4.1.1 Desktop client notes
+
+Electron ships Chromium, so the client gets a full WebRTC stack and hardware video decode
+for free: remote displays are `RTCPeerConnection` video tracks drawn into one
+`BrowserWindow` per display. The Rust side (`tether-core`) still owns identity, pairing, the
+control channel and the permission model. How Electron talks to it is an open question
+(section 8): a native Node addon built with napi-rs, or a local sidecar process.
 
 ### 4.2 Transport layers
 
@@ -123,10 +132,12 @@ input forwarding when the cursor leaves an edge.
   hex, in eight groups of four.
 - A host accepts normal sessions only from public keys in its trust store. A client
   connects only to hosts in its trust store. There is no password and no trust on first use.
+- Each trusted device on a host has a permission set (section 5.6). The entry for a host on
+  a client is identity only.
 
 ### 5.2 Secure channel
 
-- Noise `XX_25519_ChaChaPoly_BLAKE2s`, prologue `tether/1`. XX authenticates both static
+- Noise `XX_25519_ChaChaPoly_BLAKE2s`, prologue `tether/2` (tracks the protocol version). XX authenticates both static
   keys and hides them from passive observers.
 - Framing: `u16` big endian length, then one Noise transport frame. Plaintext of a frame is
   one flag byte (0 more, 1 last) plus up to 65518 bytes of message. Messages are chunked
@@ -162,14 +173,36 @@ bump `PROTOCOL_VERSION` for any incompatible change. A unit test pins the indice
 | 5 | `Ping` | either | Liveness and round trip time |
 | 6 | `Pong` | either | Reply to `Ping` |
 | 7 | `Bye` | either | Clean close |
+| 8 | `Permissions` | host to client | What the client may do. Sent after `Ready` and again whenever the grant changes |
 
-### 5.5 Known limits of M1
+### 5.5 Known limits
 
-- Trust is all or nothing. There are no per-device permissions yet (for example view only).
 - No key rotation or revocation sync. Removing a peer is a local action on each device.
 - No rekeying within a session. Acceptable at this volume, revisit when streaming bulk data
   over the control channel.
 - Pairing codes are shown in a terminal. QR code pairing arrives with the iPhone client.
+- A client only learns its permissions from the host. They are advisory for UI purposes;
+  the host is the only place they are enforced.
+
+### 5.6 Permissions
+
+| Permission | Covers |
+| --- | --- |
+| `view` | See the screen and hear the audio |
+| `input` | Mouse, keyboard and touch input |
+| `media` | Media keys, volume, brightness |
+| `power` | Lock, sleep, restart, shutdown, wake |
+| `files` | Clipboard sync and file transfer |
+
+- The host picks the grant when it shows a pairing code (`listen --pair --grant ...`). The
+  default is `view` only: look, don't touch.
+- The grant lives in the host's trust store. `peers grant` and `peers revoke` change it
+  and `peers remove` unpairs the device. All three take effect on a running host.
+- Enforcement is on the host, per request. Every permissioned action must go through
+  `Session::authorize(host, permission)`, which reloads the trust file if it changed,
+  tells the client about any change, ends the session if the device was unpaired, and then
+  checks the permission. Nothing is cached across requests in a way that outlives a revoke.
+- Trust files written before M2 have no permission field. Those devices load as `view`.
 
 ## 6. Milestones
 
@@ -188,44 +221,59 @@ bump `PROTOCOL_VERSION` for any incompatible change. A unit test pins the indice
 
 Acceptance: two machines pair with a code, reconnect without it, and refuse everyone else.
 
-### M2. Single display video and input injection
+### M2. Per-device permissions (done)
+
+- [x] `Permission` type and `Permissions` message, protocol version 2
+- [x] Permission sets stored per device in the host trust store
+- [x] Grant chosen at pairing time, default view only
+- [x] `tether peers grant`, `peers revoke`, `peers list` showing permissions
+- [x] Host reloads the trust file when it changes, so grants and unpairing apply live
+- [x] `Session::authorize` gate for later permissioned actions
+- [x] Tests: grant at pairing, default grant, live grant and revoke, unpairing ends session,
+      authorize gate, legacy trust files, no clobbering of concurrent edits (26 tests total)
+
+Acceptance: a view-only device cannot do anything permissioned, and the host changes that
+without restarting or re-pairing.
+
+### M3. Single display video and input injection
 
 - [ ] Host agent as a background service skeleton (Windows service, macOS launch agent)
 - [ ] Capture one display, hardware encode, send over WebRTC negotiated on the control channel
 - [ ] Desktop client window that renders the stream
-- [ ] Input injection: mouse, keyboard, scroll
+- [ ] Input injection: mouse, keyboard, scroll, gated by `view` and `input`
+- [ ] Electron desktop client shell, with the Rust integration chosen (see open questions)
 - [ ] PC to Mac first, then Mac to PC
 
 Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
 
-### M3. System audio
+### M4. System audio
 
 - [ ] WASAPI loopback and ScreenCaptureKit audio capture
 - [ ] Opus track both ways, feedback loop prevention
 - [ ] Optional virtual device routing
 
-### M4. iPhone controller
+### M5. iPhone controller
 
 - [ ] SwiftUI app, Swift port of `tether-proto`, Noise implementation
 - [ ] QR code pairing
-- [ ] Touch trackpad, keyboard, media panel
+- [ ] Touch trackpad, keyboard, media panel, controls disabled when the grant lacks them
 - [ ] Shortcuts integration
 
-### M5. Wake relay
+### M6. Wake relay
 
 - [ ] Relay service for a Raspberry Pi: authenticated wake request in, magic packet out
-- [ ] Wake button in desktop and iPhone clients
+- [ ] Wake button in desktop and iPhone clients, gated by `power`
 - [ ] Setup guide for BIOS, NIC and macOS power settings
 
-### M6. Multi-display windows and docking
+### M7. Multi-display windows and docking
 
 - [ ] One track and one window per physical display
 - [ ] Window snapping and saved layouts
 - [ ] Edge crossing of the cursor between machines
 
-### M7. Extras
+### M8. Extras
 
-- [ ] Clipboard sync and drag-and-drop file transfer
+- [ ] Clipboard sync and drag-and-drop file transfer, gated by `files`
 - [ ] Privacy mode and virtual display driver
 - [ ] Adaptive bitrate and low-latency toggle
 - [ ] Notification forwarding, send-to-device, macros, system stats and task view
@@ -240,12 +288,16 @@ Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
 | D-4 | 80 bit pairing code, proofs bound to the handshake hash | Avoids a PAKE dependency while staying safe against an active man in the middle | Accepted |
 | D-5 | Trust store keyed by public key, no TOFU | A stolen code is single use and expires. A wrong device never silently becomes trusted | Accepted |
 | D-6 | postcard encoding, append-only variants | Compact, easy to port to Swift, versioned by a pinned test | Accepted |
+| D-7 | Electron for the desktop client | Preferred by the owner. Bundled Chromium gives WebRTC and hardware decode with no extra work | Accepted |
+| D-8 | Permissions are per device, enforced on the host, default view only | The host owns its machine. A client must never be able to widen its own access. Least privilege by default | Accepted |
+| D-9 | Trust file is the source of truth, reloaded on change | Lets the CLI and later the UI change grants on a running host. Fixes a step 1 gap where a running host kept stale trust | Accepted |
+| D-10 | Protocol version 2, prologue tracks the version | `Permissions` is a new message that older peers cannot decode, so versions fail at the handshake instead of mid-session | Accepted |
 
 ## 8. Open questions
 
-- Which desktop UI stack: Tauri (small, Rust-native) or Electron (more familiar)?
+- Electron to Rust: native Node addon (napi-rs, in-process, one runtime) or a local sidecar process (simpler build, separate lifecycle)? Decide at the start of M3.
 - Swift Noise implementation: port `snow`'s construction, or use an existing Swift Noise library?
-- Is a per-device permission model (view only, input, power, files) needed before M2 ships?
+- Do permissions need finer grain later, for example allow-listed apps for `input`, or time-limited grants?
 - Self-hosted relay for off-Tailscale use: build, or document Tailscale and stop there?
 
 ## 9. Change log
@@ -253,3 +305,4 @@ Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
 | Date | Change |
 | --- | --- |
 | 2026-10-19 | M1 complete: protocol, identity, pairing, secure channel, CLI, tests, CI |
+| 2026-10-19 | M2 complete: per-device permissions, live trust reload, protocol version 2. Desktop client set to Electron. Later milestones renumbered |

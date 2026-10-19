@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Bumped on any incompatible wire change. Peers must match exactly for now.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const DEFAULT_PORT: u16 = 7420;
 /// Upper bound for one decoded message. Larger messages are rejected by the channel.
 pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 pub const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 /// Mixed into the Noise handshake so a version mismatch fails the handshake itself.
-pub const PROLOGUE: &[u8] = b"tether/1";
+pub const PROLOGUE: &[u8] = b"tether/2";
 
 pub type Proof = [u8; 32];
 
@@ -51,6 +51,50 @@ impl fmt::Display for Platform {
             Platform::Linux => "Linux",
             Platform::Other => "Other",
         })
+    }
+}
+
+/// What a paired device is allowed to do on the host it connects to.
+///
+/// Wire order is stable (append only). JSON uses the lowercase name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Permission {
+    /// See the screen and hear the audio.
+    View,
+    /// Mouse, keyboard and touch input.
+    Input,
+    /// Media keys, volume and brightness.
+    Media,
+    /// Lock, sleep, restart, shutdown and wake.
+    Power,
+    /// Clipboard sync and file transfer.
+    Files,
+}
+
+impl Permission {
+    pub const ALL: [Permission; 5] = [
+        Permission::View,
+        Permission::Input,
+        Permission::Media,
+        Permission::Power,
+        Permission::Files,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Permission::View => "view",
+            Permission::Input => "input",
+            Permission::Media => "media",
+            Permission::Power => "power",
+            Permission::Files => "files",
+        }
+    }
+}
+
+impl fmt::Display for Permission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
     }
 }
 
@@ -95,6 +139,11 @@ pub enum Message {
     },
     Bye {
         reason: String,
+    },
+    /// Host tells the client what it may do. Sent right after `Ready`, and again whenever
+    /// the grant changes while the session is open.
+    Permissions {
+        granted: Vec<Permission>,
     },
 }
 
@@ -148,6 +197,9 @@ mod tests {
             Message::Bye {
                 reason: String::new(),
             },
+            Message::Permissions {
+                granted: Permission::ALL.to_vec(),
+            },
         ];
         for m in msgs {
             let bytes = encode(&m).unwrap();
@@ -171,5 +223,12 @@ mod tests {
         assert_eq!(encode(&Message::Ready).unwrap(), vec![4]);
         assert_eq!(encode(&Message::Ping { nonce: 1 }).unwrap(), vec![5, 1]);
         assert_eq!(encode(&Message::Pong { nonce: 1 }).unwrap(), vec![6, 1]);
+        assert_eq!(
+            encode(&Message::Permissions {
+                granted: vec![Permission::Input, Permission::Files]
+            })
+            .unwrap(),
+            vec![8, 2, 1, 4]
+        );
     }
 }

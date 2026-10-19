@@ -5,6 +5,7 @@
 //! it offline, which must be infeasible. Typed entry stays practical and a QR code (later
 //! milestone) removes typing entirely.
 
+use crate::permissions::PermissionSet;
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
 use sha2::Sha256;
@@ -37,6 +38,8 @@ pub struct PairingOffer {
     code: String,
     pub expires_at: Instant,
     pub attempts_left: u8,
+    /// Permissions the paired device receives. Least privilege unless the host says otherwise.
+    pub grant: PermissionSet,
 }
 
 impl PairingOffer {
@@ -45,7 +48,14 @@ impl PairingOffer {
             code: generate_code(),
             expires_at: Instant::now() + ttl,
             attempts_left: MAX_ATTEMPTS,
+            grant: PermissionSet::default_grant(),
         }
+    }
+
+    /// Sets what the device that pairs with this offer is allowed to do.
+    pub fn with_grant(mut self, grant: PermissionSet) -> Self {
+        self.grant = grant;
+        self
     }
 
     /// Normalized code (no dashes) used for proofs.

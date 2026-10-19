@@ -2,8 +2,9 @@
 
 Remote desktop and device control between Windows, macOS and iPhone, built from scratch.
 
-This repository is at **step 1 of 7**: a shared protocol, one-time-code pairing and an
-encrypted, mutually authenticated connection between two machines. There is no video yet.
+This repository is at **step 2 of 8**: a shared protocol, one-time-code pairing, an
+encrypted, mutually authenticated connection between two machines, and per-device
+permissions. There is no video yet.
 The full plan, requirements and progress live in [docs/SPEC.md](docs/SPEC.md).
 
 ## Layout
@@ -41,7 +42,9 @@ On the host:
 tether listen --pair
 ```
 
-It prints its fingerprint and a code such as `4XA6-VVF2-M00G-9YHW`. On the other device:
+It prints its fingerprint and a code such as `4XA6-VVF2-M00G-9YHW`. The device that pairs
+with it gets view-only access unless you choose otherwise, for example
+`tether listen --pair --grant view,input,media`. On the other device:
 
 ```
 tether pair <host-address> --code 4XA6-VVF2-M00G-9YHW
@@ -54,9 +57,8 @@ spent and the host stops offering pairing. From then on:
 tether connect <host-address>
 ```
 
-opens an authenticated session and prints round trip times. `tether peers list` shows paired
-devices and `tether peers remove <name or fingerprint prefix>` unpairs one. Pairing is
-mutual, so unpair on both devices.
+opens an authenticated session, prints what the host allows this device to do, and prints
+round trip times. Pairing is mutual, so unpair on both devices.
 
 To try everything on one machine:
 
@@ -67,6 +69,22 @@ tether --home /tmp/client connect 127.0.0.1:7499
 ```
 
 Set `RUST_LOG=debug` for more detail.
+
+## Permissions
+
+Each paired device has its own permissions on the host it connects to: `view`, `input`,
+`media`, `power`, `files`. The host decides, and a device can never widen its own access.
+
+```
+tether peers list                      # who is paired and what they can do
+tether peers grant laptop input,media  # add permissions
+tether peers revoke laptop input       # take permissions away
+tether peers remove laptop             # unpair completely
+```
+
+`laptop` is the device's name or the start of its fingerprint. Changes apply to a running
+`tether listen` immediately, including to sessions that are already open. Devices paired
+before permissions existed load as view only.
 
 ## Where things are stored
 
@@ -110,5 +128,6 @@ previous step is applied.
 
 `Tether` is a working name. To rename, change the crate names in each `Cargo.toml`, the
 `[[bin]]` name in `crates/tether-cli/Cargo.toml`, the `ProjectDirs` string in
-`crates/tether-core/src/paths.rs`, and the `tether/1` prologue in `crates/tether-proto`
+`crates/tether-core/src/paths.rs`, and the `tether/2` prologue in `crates/tether-proto`
 (changing the prologue breaks compatibility with older builds, which is fine before release).
+The prologue is `tether/<protocol version>`, so keep the two in step.

@@ -6,16 +6,17 @@ use tether_core::{
     channel::{Role, SecureChannel},
     identity::Identity,
     pairing::PairingOffer,
+    permissions::PermissionSet,
     session::{accept, connect, ClientMode, HostConfig, Outcome, SessionError},
     trust::TrustStore,
 };
-use tether_proto::Message;
+use tether_proto::{Message, Permission};
 use tokio::io::duplex;
 
 struct Device {
     identity: Arc<Identity>,
     trust: Arc<Mutex<TrustStore>>,
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 fn device() -> Device {
@@ -24,7 +25,7 @@ fn device() -> Device {
     Device {
         identity: Arc::new(Identity::generate().unwrap()),
         trust: Arc::new(Mutex::new(trust)),
-        _dir: dir,
+        dir,
     }
 }
 
@@ -61,7 +62,7 @@ async fn pair_then_connect_then_ping() {
     let client_dev = device();
     let offer = PairingOffer::new(Duration::from_secs(60));
     let code = offer.display_code();
-    let host = host_config(&host_dev, Some(offer));
+    let host = Arc::new(host_config(&host_dev, Some(offer)));
 
     let (h, c) = run(&host, &client_dev, ClientMode::Pair { code }).await;
     assert!(matches!(h.unwrap(), Outcome::Paired(_)));
@@ -84,7 +85,8 @@ async fn pair_then_connect_then_ping() {
     else {
         panic!("expected authenticated sessions");
     };
-    let serve = tokio::spawn(host_session.serve());
+    let serve_host = host.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&serve_host).await });
     let rtt = client_session.ping(42).await.unwrap();
     assert!(rtt < Duration::from_secs(1));
     client_session.bye("done").await.unwrap();
@@ -193,6 +195,7 @@ async fn paired_host_refuses_unknown_client() {
             "host".into(),
             &host_dev.identity.public,
             tether_proto::Platform::Linux,
+            PermissionSet::none(),
         ))
         .unwrap();
     let host = host_config(&host_dev, None);
@@ -227,4 +230,136 @@ async fn large_messages_are_chunked_and_reassembled() {
         assert_eq!(cb.recv().await.unwrap(), Message::Ready);
     };
     tokio::join!(sender, receiver);
+}
+
+/// Pairs `client` with `host` using an offer that grants `grant` (or the default).
+async fn pair_with_grant(
+    host_dev: &Device,
+    client: &Device,
+    grant: Option<PermissionSet>,
+) -> Arc<HostConfig> {
+    let mut offer = PairingOffer::new(Duration::from_secs(60));
+    if let Some(g) = grant {
+        offer = offer.with_grant(g);
+    }
+    let code = offer.display_code();
+    let host = Arc::new(host_config(host_dev, Some(offer)));
+    let (h, c) = run(&host, client, ClientMode::Pair { code }).await;
+    assert!(matches!(h.unwrap(), Outcome::Paired(_)));
+    assert!(matches!(c.unwrap(), Outcome::Paired(_)));
+    host
+}
+
+async fn open_session(
+    host: &HostConfig,
+    client: &Device,
+) -> (
+    tether_core::session::Session<tokio::io::DuplexStream>,
+    tether_core::session::Session<tokio::io::DuplexStream>,
+) {
+    let (h, c) = run(host, client, ClientMode::Connect).await;
+    match (h.unwrap(), c.unwrap()) {
+        (Outcome::Authenticated(h), Outcome::Authenticated(c)) => (h, c),
+        _ => panic!("expected authenticated sessions"),
+    }
+}
+
+fn external_store(d: &Device) -> TrustStore {
+    TrustStore::load(d.dir.path().join("trusted.json")).unwrap()
+}
+
+#[tokio::test]
+async fn pairing_grant_reaches_both_sides() {
+    let host_dev = device();
+    let client_dev = device();
+    let grant = PermissionSet::none()
+        .with(Permission::View)
+        .with(Permission::Input);
+    let host = pair_with_grant(&host_dev, &client_dev, Some(grant)).await;
+
+    let stored = host_dev
+        .trust
+        .lock()
+        .unwrap()
+        .get(&client_dev.identity.public)
+        .unwrap()
+        .permissions;
+    assert_eq!(stored, grant);
+
+    let (host_session, client_session) = open_session(&host, &client_dev).await;
+    assert_eq!(host_session.permissions, grant);
+    assert_eq!(client_session.permissions, grant);
+}
+
+#[tokio::test]
+async fn default_grant_is_view_only() {
+    let host_dev = device();
+    let client_dev = device();
+    let host = pair_with_grant(&host_dev, &client_dev, None).await;
+    let (host_session, client_session) = open_session(&host, &client_dev).await;
+    assert_eq!(host_session.permissions, PermissionSet::default_grant());
+    assert_eq!(client_session.permissions.to_vec(), vec![Permission::View]);
+}
+
+#[tokio::test]
+async fn grant_changes_and_revocation_reach_a_live_session() {
+    let host_dev = device();
+    let client_dev = device();
+    let host = pair_with_grant(&host_dev, &client_dev, None).await;
+    let (host_session, mut client_session) = open_session(&host, &client_dev).await;
+
+    let serve_host = host.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&serve_host).await });
+
+    client_session.ping(1).await.unwrap();
+    assert!(!client_session.permissions.contains(Permission::Input));
+
+    // Another process (the CLI) widens the grant while the session is open.
+    external_store(&host_dev)
+        .change_permissions("client", |p| {
+            p.with(Permission::Input).with(Permission::Power)
+        })
+        .unwrap();
+    client_session.ping(2).await.unwrap();
+    assert!(client_session.permissions.contains(Permission::Input));
+    assert!(client_session.permissions.contains(Permission::Power));
+
+    // ...and then narrows it again.
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.without(Permission::Power))
+        .unwrap();
+    client_session.ping(3).await.unwrap();
+    assert!(!client_session.permissions.contains(Permission::Power));
+
+    // Unpairing ends the session.
+    assert_eq!(external_store(&host_dev).remove("client").unwrap(), 1);
+    let err = client_session.ping(4).await.unwrap_err();
+    assert!(matches!(err, SessionError::Rejected(r) if r == "access revoked"));
+    assert!(matches!(serve.await.unwrap(), Err(SessionError::Revoked)));
+}
+
+#[tokio::test]
+async fn authorize_is_the_gate_for_actions() {
+    let host_dev = device();
+    let client_dev = device();
+    let host = pair_with_grant(&host_dev, &client_dev, None).await;
+    let (mut host_session, _client_session) = open_session(&host, &client_dev).await;
+
+    host_session
+        .authorize(&host, Permission::View)
+        .await
+        .unwrap();
+    let err = host_session
+        .authorize(&host, Permission::Input)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SessionError::PermissionDenied(d) if d.0 == Permission::Input));
+
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.with(Permission::Input))
+        .unwrap();
+    host_session
+        .authorize(&host, Permission::Input)
+        .await
+        .unwrap();
 }
