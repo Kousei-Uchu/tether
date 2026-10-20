@@ -6,7 +6,7 @@ the same commit as the code it describes.
 
 | Field | Value |
 | --- | --- |
-| Status | Milestone 2 of 8 complete |
+| Status | Milestone 2 of 8 complete, milestone 3 in progress (3a done) |
 | Protocol version | 2 |
 | Targets | Windows 10+, macOS 13+, iOS 17+ |
 | Core language | Rust (agent, protocol, crypto), SwiftUI (iPhone), Electron (desktop UI) |
@@ -71,14 +71,16 @@ Legend: `[x]` done, `[~]` in progress, `[ ]` not started.
 | Wake relay | Always-on LAN device that turns a wake request into a magic packet | Rust on a Raspberry Pi |
 | `tether-proto` | Wire types, shared by every component | Rust crate, ported to Swift later |
 | `tether-core` | Identity, trust store, pairing, secure channel | Rust crate |
+| `tether-node` | Exposes `tether-core` to JavaScript: pair, connect, host, permissions | Rust cdylib using napi-rs, loaded by Electron |
 
 ### 4.1.1 Desktop client notes
 
 Electron ships Chromium, so the client gets a full WebRTC stack and hardware video decode
 for free: remote displays are `RTCPeerConnection` video tracks drawn into one
 `BrowserWindow` per display. The Rust side (`tether-core`) still owns identity, pairing, the
-control channel and the permission model. How Electron talks to it is an open question
-(section 8): a native Node addon built with napi-rs, or a local sidecar process.
+control channel and the permission model. Electron reaches it through `tether-node`, a
+native addon loaded in the main process (D-11). The renderer has no Node access: it calls a
+fixed API exposed by the preload script, which forwards to the main process over IPC.
 
 ### 4.2 Transport layers
 
@@ -203,6 +205,9 @@ bump `PROTOCOL_VERSION` for any incompatible change. A unit test pins the indice
   tells the client about any change, ends the session if the device was unpaired, and then
   checks the permission. Nothing is cached across requests in a way that outlives a revoke.
 - Trust files written before M2 have no permission field. Those devices load as `view`.
+- Pairing as a client also stores the host in the trust list, with no permissions. The
+  desktop app lists it with every box unchecked. It is the host's identity record, and it
+  only matters if that device later connects here, when it could do nothing.
 
 ## 6. Milestones
 
@@ -235,13 +240,25 @@ Acceptance: two machines pair with a code, reconnect without it, and refuse ever
 Acceptance: a view-only device cannot do anything permissioned, and the host changes that
 without restarting or re-pairing.
 
-### M3. Single display video and input injection
+### M3a. Electron shell and Rust bridge (done)
+
+- [x] `tether-node` addon: device identity, peers, grant/revoke/remove, pair, connect, ping,
+      host with pairing code and an event feed
+- [x] Hand-written TypeScript typings and a build script that works on Windows, macOS, Linux
+- [x] Electron app with a locked-down renderer (context isolation, sandbox, CSP, no navigation)
+- [x] UI for pairing, connecting, live permission display, hosting, and managing paired devices
+- [x] Tests: bridge tests in Node (3), smoke test and full UI end-to-end test in Electron
+- [x] CI runs the bridge tests on Windows, macOS and Linux
+
+Acceptance: everything the CLI can do is usable from the window, and a permission change on
+the host shows up in the client window without reconnecting.
+
+### M3b. Single display video and input injection
 
 - [ ] Host agent as a background service skeleton (Windows service, macOS launch agent)
 - [ ] Capture one display, hardware encode, send over WebRTC negotiated on the control channel
 - [ ] Desktop client window that renders the stream
 - [ ] Input injection: mouse, keyboard, scroll, gated by `view` and `input`
-- [ ] Electron desktop client shell, with the Rust integration chosen (see open questions)
 - [ ] PC to Mac first, then Mac to PC
 
 Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
@@ -292,10 +309,11 @@ Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
 | D-8 | Permissions are per device, enforced on the host, default view only | The host owns its machine. A client must never be able to widen its own access. Least privilege by default | Accepted |
 | D-9 | Trust file is the source of truth, reloaded on change | Lets the CLI and later the UI change grants on a running host. Fixes a step 1 gap where a running host kept stale trust | Accepted |
 | D-10 | Protocol version 2, prologue tracks the version | `Permissions` is a new message that older peers cannot decode, so versions fail at the handshake instead of mid-session | Accepted |
+| D-11 | Electron talks to Rust through an in-process napi-rs addon, not a sidecar | One runtime and one lifecycle, typed calls, no local port to secure. N-API is ABI stable so the addon works in both Node and Electron without per-version rebuilds | Accepted |
 
 ## 8. Open questions
 
-- Electron to Rust: native Node addon (napi-rs, in-process, one runtime) or a local sidecar process (simpler build, separate lifecycle)? Decide at the start of M3.
+- Video frames from Rust to the Electron renderer: only needed if we capture in Rust but decode in Chromium. Plan is WebRTC end to end, so the addon carries signaling and permissions, not pixels. Confirm in M3b.
 - Swift Noise implementation: port `snow`'s construction, or use an existing Swift Noise library?
 - Do permissions need finer grain later, for example allow-listed apps for `input`, or time-limited grants?
 - Self-hosted relay for off-Tailscale use: build, or document Tailscale and stop there?
@@ -305,4 +323,5 @@ Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
 | Date | Change |
 | --- | --- |
 | 2026-10-19 | M1 complete: protocol, identity, pairing, secure channel, CLI, tests, CI |
+| 2026-10-20 | M3a complete: `tether-node` bridge and the Electron desktop app (pair, connect, host, permissions) |
 | 2026-10-19 | M2 complete: per-device permissions, live trust reload, protocol version 2. Desktop client set to Electron. Later milestones renumbered |

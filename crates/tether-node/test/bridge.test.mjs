@@ -1,0 +1,96 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createRequire } from 'node:module';
+
+const { Device } = createRequire(import.meta.url)('../index.js');
+
+function makeDevice(name) {
+  const home = mkdtempSync(join(tmpdir(), `tether-${name}-`));
+  return { device: new Device(home, name), home };
+}
+
+test('pair, connect, live permission changes, unpair', async () => {
+  const host = makeDevice('host-pc');
+  const client = makeDevice('laptop');
+  try {
+    assert.match(host.device.fingerprint, /^([0-9a-f]{4}-){7}[0-9a-f]{4}$/);
+    assert.equal(host.device.name, 'host-pc');
+
+    const handle = await host.device.listen('127.0.0.1:0', { grant: ['view', 'media'] });
+    assert.match(handle.pairingCode, /^[0-9A-Z]{4}(-[0-9A-Z]{4}){3}$/);
+
+    // Wrong code is refused and nothing is stored.
+    await assert.rejects(client.device.pair(handle.address, 'AAAA-BBBB-CCCC-DDDD'), /pairing failed/);
+    assert.equal(client.device.peers().length, 0);
+
+    // Connecting before pairing is refused.
+    await assert.rejects(client.device.connect(handle.address), /not paired/);
+
+    const paired = await client.device.pair(handle.address, handle.pairingCode);
+    assert.equal(paired.name, 'host-pc');
+    assert.deepEqual(host.device.peers().map((p) => [p.name, p.permissions]), [
+      ['laptop', ['view', 'media']],
+    ]);
+
+    const conn = await client.device.connect(handle.address);
+    assert.equal(conn.peer.name, 'host-pc');
+    assert.deepEqual(conn.permissions, ['view', 'media']);
+    assert.ok((await conn.ping()) >= 0);
+
+    // The host widens, then narrows, the grant while the session is open.
+    host.device.grant('laptop', ['input', 'power']);
+    await conn.ping();
+    assert.deepEqual(conn.permissions, ['view', 'input', 'media', 'power']);
+    host.device.revoke('laptop', ['power']);
+    await conn.ping();
+    assert.deepEqual(conn.permissions, ['view', 'input', 'media']);
+
+    // Unpairing ends the session, and the connection reports why.
+    assert.equal(host.device.remove('laptop'), 1);
+    await assert.rejects(conn.ping(), /access revoked/);
+    await assert.rejects(conn.ping(), /closed/);
+    await assert.rejects(client.device.connect(handle.address), /not paired/);
+
+    const kinds = handle.drainEvents().map((e) => e.kind);
+    assert.ok(kinds.includes('paired'));
+    assert.ok(kinds.includes('session-opened'));
+    assert.ok(kinds.includes('refused'));
+    assert.deepEqual(handle.drainEvents(), []);
+
+    handle.stop();
+  } finally {
+    rmSync(host.home, { recursive: true, force: true });
+    rmSync(client.home, { recursive: true, force: true });
+  }
+});
+
+test('bad input produces readable errors', async () => {
+  const d = makeDevice('solo');
+  try {
+    assert.throws(() => d.device.grant('nobody', ['view']), /no paired device matches/);
+    assert.throws(() => d.device.grant('nobody', ['fly']), /unknown permission/);
+    await assert.rejects(d.device.connect('127.0.0.1:1'), /could not connect/);
+  } finally {
+    rmSync(d.home, { recursive: true, force: true });
+  }
+});
+
+test('stopping the host closes the port', async () => {
+  const host = makeDevice('h');
+  const client = makeDevice('c');
+  try {
+    const handle = await host.device.listen('127.0.0.1:0', { grant: ['view'] });
+    await client.device.pair(handle.address, handle.pairingCode);
+    const conn = await client.device.connect(handle.address);
+    handle.stop();
+    await new Promise((r) => setTimeout(r, 200));
+    await assert.rejects(conn.ping());
+    await assert.rejects(client.device.connect(handle.address), /could not connect/);
+  } finally {
+    rmSync(host.home, { recursive: true, force: true });
+    rmSync(client.home, { recursive: true, force: true });
+  }
+});

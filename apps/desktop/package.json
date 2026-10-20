@@ -1,0 +1,16 @@
+{
+  "name": "tether-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tether desktop client",
+  "main": "main.js",
+  "scripts": {
+    "prestart": "node ../../crates/tether-node/scripts/build.mjs",
+    "start": "electron .",
+    "smoke": "node ../../crates/tether-node/scripts/build.mjs && electron . --smoke",
+    "e2e": "node ../../crates/tether-node/scripts/build.mjs && electron test/e2e.js"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0"
+  }
+}

@@ -3,3 +3,6 @@
 .DS_Store
 .idea/
 .vscode/
+node_modules/
+crates/tether-node/tether.node
+apps/desktop/dist/

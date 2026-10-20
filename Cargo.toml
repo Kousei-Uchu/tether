@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/tether-proto", "crates/tether-core", "crates/tether-cli"]
+members = [
+    "crates/tether-proto",
+    "crates/tether-core",
+    "crates/tether-cli",
+    "crates/tether-node",
+]
 
 [workspace.package]
 version = "0.1.0"

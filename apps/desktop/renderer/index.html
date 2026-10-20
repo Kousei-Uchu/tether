@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tether</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="top">
+      <h1>Tether</h1>
+      <div class="identity">
+        <span id="device-name">...</span>
+        <code id="device-fingerprint" title="This device's fingerprint"></code>
+      </div>
+    </header>
+
+    <main>
+      <section class="card" aria-labelledby="connect-title">
+        <h2 id="connect-title">Connect to a device</h2>
+        <p class="hint">
+          The first time, pair with the code shown on the other device. After that, just connect.
+        </p>
+        <div class="row">
+          <label class="grow">
+            Address
+            <input id="address" type="text" placeholder="192.168.1.20 or my-pc:7420" spellcheck="false" />
+          </label>
+          <label class="grow">
+            Pairing code
+            <input id="code" type="text" placeholder="XXXX-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" />
+          </label>
+        </div>
+        <div class="row actions">
+          <button id="pair-btn">Pair</button>
+          <button id="connect-btn" class="primary">Connect</button>
+        </div>
+        <p id="connect-msg" class="msg" role="status"></p>
+
+        <div id="connection" class="connection" hidden>
+          <div class="conn-head">
+            <div>
+              <strong id="conn-name"></strong>
+              <span id="conn-platform" class="muted"></span>
+              <div><code id="conn-fingerprint"></code></div>
+            </div>
+            <div class="conn-side">
+              <span id="conn-rtt" class="muted"></span>
+              <button id="disconnect-btn">Disconnect</button>
+            </div>
+          </div>
+          <div class="muted small">This device is allowed to:</div>
+          <ul id="conn-perms" class="chips"></ul>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="host-title">
+        <h2 id="host-title">Accept connections on this device</h2>
+        <div id="host-form">
+          <div class="row">
+            <label class="grow">
+              Listen on
+              <input id="bind" type="text" value="0.0.0.0:7420" spellcheck="false" />
+            </label>
+          </div>
+          <label class="check">
+            <input id="pairing" type="checkbox" checked />
+            Show a one-time pairing code so a new device can pair
+          </label>
+          <fieldset id="grant-set">
+            <legend>A device that pairs with the code may</legend>
+            <div id="grant-boxes" class="boxes"></div>
+          </fieldset>
+          <div class="row actions">
+            <button id="host-start" class="primary">Start</button>
+          </div>
+        </div>
+        <div id="host-running" hidden>
+          <p>Listening on <code id="host-address"></code></p>
+          <div id="code-block" class="code-block" hidden>
+            <div class="muted small">Pairing code, single use</div>
+            <div id="host-code" class="big-code"></div>
+          </div>
+          <div class="row actions">
+            <button id="host-stop">Stop</button>
+          </div>
+          <ul id="host-log" class="log"></ul>
+        </div>
+        <p id="host-msg" class="msg" role="status"></p>
+      </section>
+
+      <section class="card" aria-labelledby="peers-title">
+        <h2 id="peers-title">Devices paired with this machine</h2>
+        <p class="hint">
+          What each device may do when it connects here. Changes apply straight away, even to
+          open sessions.
+        </p>
+        <div id="peers"></div>
+        <p id="peers-msg" class="msg" role="status"></p>
+      </section>
+    </main>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

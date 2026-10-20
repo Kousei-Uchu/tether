@@ -2,9 +2,9 @@
 
 Remote desktop and device control between Windows, macOS and iPhone, built from scratch.
 
-This repository is at **step 2 of 8**: a shared protocol, one-time-code pairing, an
-encrypted, mutually authenticated connection between two machines, and per-device
-permissions. There is no video yet.
+This repository is at **step 3 of 8, part a**: a shared protocol, one-time-code pairing, an
+encrypted, mutually authenticated connection between two machines, per-device permissions,
+and an Electron desktop app that drives all of it. There is no video yet.
 The full plan, requirements and progress live in [docs/SPEC.md](docs/SPEC.md).
 
 ## Layout
@@ -13,7 +13,10 @@ The full plan, requirements and progress live in [docs/SPEC.md](docs/SPEC.md).
 crates/
   tether-proto   wire types and codec (shared by every client)
   tether-core    identity, trust store, pairing, Noise secure channel, sessions
-  tether-cli     the `tether` command, used to exercise step 1
+  tether-cli     the `tether` command, a terminal front end for the same features
+  tether-node    Node and Electron bridge to tether-core (napi-rs)
+apps/
+  desktop        the Electron app
 docs/SPEC.md     specification, security model, milestones, decision log
 ```
 
@@ -31,7 +34,33 @@ cargo test --workspace
 
 The binary is `target/release/tether` (`tether.exe` on Windows).
 
-## Try it
+## Desktop app
+
+Needs Node 22 or newer as well as Rust.
+
+```
+cd apps/desktop
+npm install
+npm start
+```
+
+`npm start` builds the Rust bridge first, then opens the window. From there you can pair
+with another device using its code, connect and watch round trip time and permissions, accept
+connections on this machine (showing a pairing code), and manage what each paired device is
+allowed to do. The same data directory is used as by the `tether` command, so the two
+interoperate.
+
+Checks that need no display on Windows and macOS, and `xvfb-run -a` on Linux:
+
+```
+npm run smoke      # the window opens and shows this device's identity
+npm run e2e        # drives the real UI through pair, connect, live grant and revoke
+cd ../../crates/tether-node && npm test   # the bridge on its own, no Electron
+```
+
+On Linux as root (containers) Electron also needs `--no-sandbox`.
+
+## Try it from the terminal
 
 Pairing needs one device to listen and another to pair with it. Both can be on the same
 machine if you give them separate data directories.
@@ -126,7 +155,7 @@ previous step is applied.
 
 ## Renaming the project
 
-`Tether` is a working name. To rename, change the crate names in each `Cargo.toml`, the
+`Tether` is a working name. To rename, change the crate names in each `Cargo.toml` and the Node package names, the
 `[[bin]]` name in `crates/tether-cli/Cargo.toml`, the `ProjectDirs` string in
 `crates/tether-core/src/paths.rs`, and the `tether/2` prologue in `crates/tether-proto`
 (changing the prologue breaks compatibility with older builds, which is fine before release).
