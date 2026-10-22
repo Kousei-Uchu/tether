@@ -5,8 +5,9 @@
 //!   or a one-shot pairing exchange (`PairRequest` / `PairAccept`).
 
 use crate::{
-    channel::{ChannelError, Role, SecureChannel},
+    channel::{ChannelError, Role, SecureChannel, SecureSender},
     identity::{fingerprint, Identity},
+    media::MediaProvider,
     pairing::{self, PairingOffer, ProofRole},
     permissions::{PermissionDenied, PermissionSet},
     trust::{TrustStore, TrustedPeer},
@@ -15,14 +16,22 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tether_proto::{Hello, Intent, Message, Permission, Platform, PROTOCOL_VERSION};
+use tether_proto::{Hello, Intent, Message, Permission, Platform, SignalKind, PROTOCOL_VERSION};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    time::timeout,
+    sync::mpsc,
+    time::{interval, timeout, MissedTickBehavior},
 };
 
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// A host drops a client it has not heard from for this long. Clients keep the session
+/// alive with pings, including while video is playing.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often a host re-checks a connected device against the trust file. This bounds how long
+/// a revoked permission, such as `view`, keeps working on a session that is otherwise quiet.
+pub const PERMISSION_POLL: Duration = Duration::from_secs(1);
+/// How long a client waits for the host to answer a video offer.
+pub const SIGNAL_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -46,6 +55,8 @@ pub enum SessionError {
     InvalidCode,
     #[error("protocol violation: {0}")]
     Protocol(&'static str),
+    #[error("the host could not start video: {0}")]
+    Signal(String),
     #[error("timed out")]
     Timeout,
     #[error("could not read or update the trust store: {0}")]
@@ -71,6 +82,8 @@ pub struct Session<S> {
     /// On a host: what the connected device may do. On a client: what the host allows this
     /// device to do, kept current from `Permissions` messages (use it to grey out controls).
     pub permissions: PermissionSet,
+    /// Host side: the running video session, if any. Dropping it stops the video.
+    media_guard: Option<Box<dyn Send>>,
 }
 
 pub enum Outcome<S> {
@@ -86,6 +99,8 @@ pub struct HostConfig {
     pub trust: Arc<Mutex<TrustStore>>,
     pub pairing: Arc<Mutex<Option<PairingOffer>>>,
     pub device_name: String,
+    /// Where video comes from. `None` means this host does not share its screen.
+    pub media: Option<Arc<dyn MediaProvider>>,
 }
 
 impl HostConfig {
@@ -164,6 +179,7 @@ where
                 channel: ch,
                 peer,
                 permissions,
+                media_guard: None,
             }))
         }
         Intent::Pair => {
@@ -293,6 +309,7 @@ where
                 channel: ch,
                 peer,
                 permissions: granted.into(),
+                media_guard: None,
             }))
         }
         ClientMode::Pair { code } => {
@@ -334,7 +351,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
     /// Round trip time of one ping. Also applies any `Permissions` update that arrives.
     pub async fn ping(&mut self, nonce: u64) -> Result<Duration, SessionError> {
         let start = Instant::now();
-        self.channel.send(&Message::Ping { nonce }).await?;
+        if let Err(e) = self.channel.send(&Message::Ping { nonce }).await {
+            // The host may have said goodbye (for example "access revoked") and hung up.
+            return Err(match self.read_goodbye().await {
+                Some(reason) => SessionError::Rejected(reason),
+                None => e.into(),
+            });
+        }
         loop {
             match timeout(AUTH_TIMEOUT, self.channel.recv())
                 .await
@@ -348,6 +371,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         }
     }
 
+    /// Reads whatever the host sent before hanging up, looking for its reason.
+    async fn read_goodbye(&mut self) -> Option<String> {
+        loop {
+            match timeout(Duration::from_millis(250), self.channel.recv()).await {
+                Ok(Ok(Message::Bye { reason })) => return Some(reason),
+                Ok(Ok(_)) => continue,
+                _ => return None,
+            }
+        }
+    }
+
     pub async fn bye(&mut self, reason: &str) -> Result<(), SessionError> {
         self.channel
             .send(&Message::Bye {
@@ -357,31 +391,47 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         Ok(())
     }
 
+    /// Client side: asks the host for its screen. `offer` is a WebRTC session description;
+    /// the return value is the host's answer. Fails with [`SessionError::Signal`] if the
+    /// host refuses, for example because this device lacks `view`.
+    pub async fn request_video(&mut self, offer: String) -> Result<String, SessionError> {
+        self.channel
+            .send(&Message::Signal {
+                kind: SignalKind::Offer,
+                payload: offer,
+            })
+            .await?;
+        loop {
+            match timeout(SIGNAL_TIMEOUT, self.channel.recv())
+                .await
+                .map_err(|_| SessionError::Timeout)??
+            {
+                Message::Signal {
+                    kind: SignalKind::Answer,
+                    payload,
+                } => return Ok(payload),
+                Message::Signal {
+                    kind: SignalKind::Error,
+                    payload,
+                } => return Err(SessionError::Signal(payload)),
+                Message::Permissions { granted } => self.permissions = granted.into(),
+                Message::Bye { reason } => return Err(SessionError::Rejected(reason)),
+                _ => continue,
+            }
+        }
+    }
+
     /// Host side. Re-reads this device's permissions from the trust store. If the device was
     /// unpaired, tells it so and returns `Revoked`. If the grant changed, updates the session
     /// and tells the client. Call before acting on every request from the peer.
     pub async fn refresh_permissions(&mut self, host: &HostConfig) -> Result<(), SessionError> {
-        match host.permissions_for(&self.peer.public_key)? {
-            None => {
-                let _ = self
-                    .channel
-                    .send(&Message::Bye {
-                        reason: "access revoked".into(),
-                    })
-                    .await;
-                Err(SessionError::Revoked)
-            }
-            Some(now) if now != self.permissions => {
-                self.permissions = now;
-                self.channel
-                    .send(&Message::Permissions {
-                        granted: now.to_vec(),
-                    })
-                    .await?;
-                Ok(())
-            }
-            Some(_) => Ok(()),
-        }
+        apply_permissions(
+            host,
+            &self.peer.public_key,
+            &mut self.permissions,
+            &mut self.channel.sender,
+        )
+        .await
     }
 
     /// Host side. Refreshes, then requires `needed`. This is the gate every permissioned
@@ -395,22 +445,154 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         self.permissions.require(needed)?;
         Ok(())
     }
+}
 
-    /// Host side loop: answer pings until the peer leaves, goes idle or is revoked.
-    pub async fn serve(mut self, host: &HostConfig) -> Result<(), SessionError> {
-        loop {
-            let msg = match timeout(IDLE_TIMEOUT, self.channel.recv()).await {
-                Err(_) => return Err(SessionError::Timeout),
-                Ok(Err(ChannelError::Closed)) => return Ok(()),
-                Ok(Err(e)) => return Err(e.into()),
-                Ok(Ok(m)) => m,
-            };
-            self.refresh_permissions(host).await?;
-            match msg {
-                Message::Ping { nonce } => self.channel.send(&Message::Pong { nonce }).await?,
-                Message::Bye { .. } => return Ok(()),
-                other => tracing::debug!(?other, "ignoring unexpected message"),
+/// Shared by `refresh_permissions` and the serve loop.
+async fn apply_permissions<W: AsyncWrite + Unpin>(
+    host: &HostConfig,
+    key: &[u8; 32],
+    current: &mut PermissionSet,
+    sender: &mut SecureSender<W>,
+) -> Result<(), SessionError> {
+    match host.permissions_for(key)? {
+        None => {
+            let _ = sender
+                .send(&Message::Bye {
+                    reason: "access revoked".into(),
+                })
+                .await;
+            Err(SessionError::Revoked)
+        }
+        Some(now) if now != *current => {
+            *current = now;
+            sender
+                .send(&Message::Permissions {
+                    granted: now.to_vec(),
+                })
+                .await?;
+            Ok(())
+        }
+        Some(_) => Ok(()),
+    }
+}
+
+impl<S> Session<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    /// Host side loop. Answers pings and video offers until the peer leaves, goes idle or is
+    /// revoked. Every `PERMISSION_POLL` it re-checks the device against the trust file, so a
+    /// revoked grant takes effect, and video stops, even if the peer says nothing.
+    pub async fn serve(self, host: &HostConfig) -> Result<(), SessionError> {
+        let Session {
+            channel,
+            peer,
+            mut permissions,
+            mut media_guard,
+        } = self;
+        let SecureChannel {
+            mut sender,
+            receiver,
+            ..
+        } = channel;
+
+        // Reading happens in its own task so the loop below can also wake on a timer.
+        // (A half-read frame must never be cancelled, so the read is not part of the select.)
+        let (tx, mut rx) = mpsc::channel(16);
+        let reader = tokio::spawn(async move {
+            let mut receiver = receiver;
+            loop {
+                let msg = receiver.recv().await;
+                let done = msg.is_err();
+                if tx.send(msg).await.is_err() || done {
+                    break;
+                }
+            }
+        });
+
+        let result = serve_loop(
+            host,
+            &peer,
+            &mut permissions,
+            &mut sender,
+            &mut rx,
+            &mut media_guard,
+        )
+        .await;
+        reader.abort();
+        drop(media_guard);
+        result
+    }
+}
+
+async fn serve_loop<W: AsyncWrite + Unpin>(
+    host: &HostConfig,
+    peer: &PeerInfo,
+    permissions: &mut PermissionSet,
+    sender: &mut SecureSender<W>,
+    rx: &mut mpsc::Receiver<Result<Message, ChannelError>>,
+    media: &mut Option<Box<dyn Send>>,
+) -> Result<(), SessionError> {
+    let mut tick = interval(PERMISSION_POLL);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut last_heard = Instant::now();
+
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                apply_permissions(host, &peer.public_key, permissions, sender).await?;
+                if !permissions.contains(Permission::View) {
+                    *media = None;
+                }
+                if last_heard.elapsed() > IDLE_TIMEOUT {
+                    return Err(SessionError::Timeout);
+                }
+            }
+            incoming = rx.recv() => {
+                let msg = match incoming {
+                    None | Some(Err(ChannelError::Closed)) => return Ok(()),
+                    Some(Err(e)) => return Err(e.into()),
+                    Some(Ok(m)) => m,
+                };
+                last_heard = Instant::now();
+                apply_permissions(host, &peer.public_key, permissions, sender).await?;
+                if !permissions.contains(Permission::View) {
+                    *media = None;
+                }
+                match msg {
+                    Message::Ping { nonce } => sender.send(&Message::Pong { nonce }).await?,
+                    Message::Bye { .. } => return Ok(()),
+                    Message::Signal { kind: SignalKind::Offer, payload } => {
+                        // A new offer replaces any running video.
+                        *media = None;
+                        let reply = match offer_reply(host, peer, *permissions, payload).await {
+                            Ok((sdp, guard)) => {
+                                *media = Some(guard);
+                                Message::Signal { kind: SignalKind::Answer, payload: sdp }
+                            }
+                            Err(reason) => Message::Signal { kind: SignalKind::Error, payload: reason },
+                        };
+                        sender.send(&reply).await?;
+                    }
+                    other => tracing::debug!(?other, "ignoring unexpected message"),
+                }
             }
         }
     }
+}
+
+async fn offer_reply(
+    host: &HostConfig,
+    peer: &PeerInfo,
+    permissions: PermissionSet,
+    offer: String,
+) -> Result<(String, Box<dyn Send>), String> {
+    permissions
+        .require(Permission::View)
+        .map_err(|e| e.to_string())?;
+    let Some(media) = &host.media else {
+        return Err("this device is not sharing its screen".into());
+    };
+    let answer = media.answer(peer, offer).await?;
+    Ok((answer.sdp, answer.guard))
 }

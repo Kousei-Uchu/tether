@@ -2,9 +2,10 @@
 
 Remote desktop and device control between Windows, macOS and iPhone, built from scratch.
 
-This repository is at **step 3 of 8, part a**: a shared protocol, one-time-code pairing, an
+This repository is at **step 3 of 8, part b**: a shared protocol, one-time-code pairing, an
 encrypted, mutually authenticated connection between two machines, per-device permissions,
-and an Electron desktop app that drives all of it. There is no video yet.
+an Electron desktop app, and live video over WebRTC. The video source is a **test pattern**
+for now; capturing a real screen is the next part.
 The full plan, requirements and progress live in [docs/SPEC.md](docs/SPEC.md).
 
 ## Layout
@@ -14,6 +15,7 @@ crates/
   tether-proto   wire types and codec (shared by every client)
   tether-core    identity, trust store, pairing, Noise secure channel, sessions
   tether-cli     the `tether` command, a terminal front end for the same features
+  tether-media   host side video: frame sources, H.264 encoder, WebRTC
   tether-node    Node and Electron bridge to tether-core (napi-rs)
 apps/
   desktop        the Electron app
@@ -25,7 +27,10 @@ next to these.
 
 ## Build and test
 
-Needs Rust 1.80 or newer (`rustup` on Windows and macOS). No other system dependencies.
+Needs Rust 1.80 or newer (`rustup` on Windows and macOS) and a C++ compiler for the H.264
+encoder: Xcode command line tools on macOS, the Visual Studio C++ build tools on Windows.
+The first build compiles WebRTC and OpenH264 and takes several minutes; later builds are fast.
+If the build complains about `nasm`, install it (`brew install nasm`, `choco install nasm`).
 
 ```
 cargo build --release
@@ -47,14 +52,20 @@ npm start
 `npm start` builds the Rust bridge first, then opens the window. From there you can pair
 with another device using its code, connect and watch round trip time and permissions, accept
 connections on this machine (showing a pairing code), and manage what each paired device is
-allowed to do. The same data directory is used as by the `tether` command, so the two
+allowed to do.
+
+To see video: on the host, leave "Share a test video" ticked and start accepting
+connections. On the other device, connect and press **Show screen**. The button is disabled
+unless the host has granted `view`, and the video stops the moment `view` is revoked.
+The test pattern is a gradient with a bouncing square and a row of black and white blocks
+along the bottom that count frames in binary. The same data directory is used as by the `tether` command, so the two
 interoperate.
 
 Checks that need no display on Windows and macOS, and `xvfb-run -a` on Linux:
 
 ```
 npm run smoke      # the window opens and shows this device's identity
-npm run e2e        # drives the real UI through pair, connect, live grant and revoke
+npm run e2e        # drives the real UI through pair, connect, video, live grant and revoke
 cd ../../crates/tether-node && npm test   # the bridge on its own, no Electron
 ```
 
@@ -96,6 +107,8 @@ tether --home /tmp/host listen --bind 127.0.0.1:7499 --pair
 tether --home /tmp/client pair 127.0.0.1:7499 --code <code>
 tether --home /tmp/client connect 127.0.0.1:7499
 ```
+
+To serve the test video from the terminal too, add `--video test-pattern` to `listen`.
 
 Set `RUST_LOG=debug` for more detail.
 
@@ -157,6 +170,6 @@ previous step is applied.
 
 `Tether` is a working name. To rename, change the crate names in each `Cargo.toml` and the Node package names, the
 `[[bin]]` name in `crates/tether-cli/Cargo.toml`, the `ProjectDirs` string in
-`crates/tether-core/src/paths.rs`, and the `tether/2` prologue in `crates/tether-proto`
+`crates/tether-core/src/paths.rs`, and the `tether/3` prologue in `crates/tether-proto`
 (changing the prologue breaks compatibility with older builds, which is fine before release).
 The prologue is `tether/<protocol version>`, so keep the two in step.

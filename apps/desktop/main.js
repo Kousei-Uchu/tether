@@ -6,6 +6,10 @@ const { Device } = require('../../crates/tether-node');
 const smoke = process.argv.includes('--smoke');
 const PERMISSIONS = ['view', 'input', 'media', 'power', 'files'];
 
+// Chromium hides local addresses behind mDNS names by default. Tether peers are your own
+// machines on a LAN or Tailscale, and the host cannot resolve those names, so turn it off.
+app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
+
 let device = null;
 let win = null;
 let connection = null;
@@ -76,10 +80,15 @@ function registerIpc() {
     }
   });
 
-  handle('host:start', async ({ bind, pairing, grant }) => {
+  handle('media:offer', (offer) => {
+    if (!connection) throw new Error('Not connected.');
+    return connection.requestVideo(String(offer));
+  });
+
+  handle('host:start', async ({ bind, pairing, grant, video }) => {
     if (host) throw new Error('Already accepting connections.');
     const options = pairing ? { grant: validPermissions(grant ?? ['view']) } : null;
-    host = await device.listen(String(bind), options);
+    host = await device.listen(String(bind), options, video ? 'test-pattern' : null);
     hostLog = [];
     return hostState();
   });

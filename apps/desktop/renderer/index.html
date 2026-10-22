@@ -55,6 +55,15 @@
           </div>
           <div class="muted small">This device is allowed to:</div>
           <ul id="conn-perms" class="chips"></ul>
+
+          <div class="screen-box">
+            <div class="row actions start">
+              <button id="show-screen" class="primary">Show screen</button>
+              <button id="stop-screen" hidden>Stop video</button>
+            </div>
+            <p id="screen-msg" class="msg" role="status"></p>
+            <video id="screen" autoplay muted playsinline hidden></video>
+          </div>
         </div>
       </section>
 
@@ -70,6 +79,10 @@
           <label class="check">
             <input id="pairing" type="checkbox" checked />
             Show a one-time pairing code so a new device can pair
+          </label>
+          <label class="check">
+            <input id="video" type="checkbox" checked />
+            Share a test video with devices that may view (screen capture comes in a later step)
           </label>
           <fieldset id="grant-set">
             <legend>A device that pairs with the code may</legend>

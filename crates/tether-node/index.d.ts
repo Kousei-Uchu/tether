@@ -34,7 +34,8 @@ export class Device {
   remove(query: string): number;
   pair(address: string, code: string): Promise<PeerSummary>;
   connect(address: string): Promise<Connection>;
-  listen(bind: string, pairing?: PairingOptions | null): Promise<HostHandle>;
+  /** `video` lets permitted devices watch a stream. Only "test-pattern" exists so far. */
+  listen(bind: string, pairing?: PairingOptions | null, video?: string | null): Promise<HostHandle>;
 }
 
 export class Connection {
@@ -43,6 +44,8 @@ export class Connection {
   readonly permissions: string[];
   /** Round trip time in milliseconds. */
   ping(): Promise<number>;
+  /** Sends a WebRTC offer, resolves with the host's answer. Needs the "view" permission. */
+  requestVideo(offer: string): Promise<string>;
   close(): Promise<void>;
 }
 

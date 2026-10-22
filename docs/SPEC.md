@@ -6,8 +6,8 @@ the same commit as the code it describes.
 
 | Field | Value |
 | --- | --- |
-| Status | Milestone 2 of 8 complete, milestone 3 in progress (3a done) |
-| Protocol version | 2 |
+| Status | Milestone 2 of 8 complete, milestone 3 in progress (3a and 3b done) |
+| Protocol version | 3 |
 | Targets | Windows 10+, macOS 13+, iOS 17+ |
 | Core language | Rust (agent, protocol, crypto), SwiftUI (iPhone), Electron (desktop UI) |
 
@@ -71,6 +71,7 @@ Legend: `[x]` done, `[~]` in progress, `[ ]` not started.
 | Wake relay | Always-on LAN device that turns a wake request into a magic packet | Rust on a Raspberry Pi |
 | `tether-proto` | Wire types, shared by every component | Rust crate, ported to Swift later |
 | `tether-core` | Identity, trust store, pairing, secure channel | Rust crate |
+| `tether-media` | Host side video: frame sources, H.264 encoder, WebRTC session | Rust crate (webrtc-rs, OpenH264) |
 | `tether-node` | Exposes `tether-core` to JavaScript: pair, connect, host, permissions | Rust cdylib using napi-rs, loaded by Electron |
 
 ### 4.1.1 Desktop client notes
@@ -139,7 +140,7 @@ input forwarding when the cursor leaves an edge.
 
 ### 5.2 Secure channel
 
-- Noise `XX_25519_ChaChaPoly_BLAKE2s`, prologue `tether/2` (tracks the protocol version). XX authenticates both static
+- Noise `XX_25519_ChaChaPoly_BLAKE2s`, prologue `tether/3` (tracks the protocol version). XX authenticates both static
   keys and hides them from passive observers.
 - Framing: `u16` big endian length, then one Noise transport frame. Plaintext of a frame is
   one flag byte (0 more, 1 last) plus up to 65518 bytes of message. Messages are chunked
@@ -176,8 +177,12 @@ bump `PROTOCOL_VERSION` for any incompatible change. A unit test pins the indice
 | 6 | `Pong` | either | Reply to `Ping` |
 | 7 | `Bye` | either | Clean close |
 | 8 | `Permissions` | host to client | What the client may do. Sent after `Ready` and again whenever the grant changes |
+| 9 | `Signal` | both | WebRTC offer (client), answer or error (host). The host answers only if the device holds `view` |
 
 ### 5.5 Known limits
+
+- Clients must keep the session alive with pings (the desktop app pings every 3 seconds). A host drops a device it has not heard from for 60 seconds, including while video plays.
+- Video has no audio yet, and one stream per viewer. Each viewer starts its own source and encoder.
 
 - No key rotation or revocation sync. Removing a peer is a local action on each device.
 - No rekeying within a session. Acceptable at this volume, revisit when streaming bulk data
@@ -253,13 +258,32 @@ without restarting or re-pairing.
 Acceptance: everything the CLI can do is usable from the window, and a permission change on
 the host shows up in the client window without reconnecting.
 
-### M3b. Single display video and input injection
+### M3b. Video pipeline (done, with a test pattern as the source)
 
+- [x] Protocol version 3: `Signal` message carries the WebRTC offer and answer over the encrypted channel
+- [x] `FrameSource` trait and a test pattern source with a readable frame counter
+- [x] Software H.264 encoder (OpenH264, Constrained Baseline) with keyframe on request
+- [x] WebRTC host: H.264 only, answers a viewer's offer, streams, ends when the session ends
+- [x] Host timer re-checks permissions, so revoking `view` or unpairing stops video within about a second even if the viewer is silent
+- [x] Electron viewer: Show screen, Stop video, disabled without `view`, stops on revoke
+- [x] Tests: Rust viewer against the host over loopback (RTP flows, stops with the session), session tests with a fake media provider, bridge tests, and an Electron test that reads the frame counter back out of the decoded video
+
+Acceptance: a paired device with `view` sees a live stream in the desktop window, and loses it
+when the host revokes `view`. Met with the test pattern.
+
+### M3c. Screen capture sources
+
+- [ ] Windows capture (Windows Graphics Capture or DXGI), hardware encode (Media Foundation, NVENC)
+- [ ] macOS capture (ScreenCaptureKit), hardware encode (VideoToolbox)
+- [ ] Choose the display, one video track per display
 - [ ] Host agent as a background service skeleton (Windows service, macOS launch agent)
-- [ ] Capture one display, hardware encode, send over WebRTC negotiated on the control channel
-- [ ] Desktop client window that renders the stream
-- [ ] Input injection: mouse, keyboard, scroll, gated by `view` and `input`
-- [ ] PC to Mac first, then Mac to PC
+
+Acceptance: the Mac sees the PC's screen and the PC sees the Mac's, at 30 fps on a LAN.
+
+### M3d. Input injection
+
+- [ ] Mouse, keyboard and scroll over the control channel, gated by `input`
+- [ ] `SendInput` on Windows, `CGEvent` on macOS
 
 Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
 
@@ -310,10 +334,15 @@ Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
 | D-9 | Trust file is the source of truth, reloaded on change | Lets the CLI and later the UI change grants on a running host. Fixes a step 1 gap where a running host kept stale trust | Accepted |
 | D-10 | Protocol version 2, prologue tracks the version | `Permissions` is a new message that older peers cannot decode, so versions fail at the handshake instead of mid-session | Accepted |
 | D-11 | Electron talks to Rust through an in-process napi-rs addon, not a sidecar | One runtime and one lifecycle, typed calls, no local port to secure. N-API is ABI stable so the addon works in both Node and Electron without per-version rebuilds | Accepted |
+| D-12 | Video: H.264 over WebRTC, host in Rust (webrtc-rs 0.14), viewer is Chromium | Chromium decodes H.264 with hardware help and has a full WebRTC stack. The host offers H.264 only so negotiation is deterministic | Accepted |
+| D-13 | The host's sending transceiver is created before the viewer's offer is applied | In webrtc-rs 0.14, `add_track` after the offer makes a second, unnegotiated transceiver and the viewer never learns about the stream. Found by the loopback test | Accepted |
+| D-14 | Electron disables mDNS hiding of local IPs in WebRTC | The host cannot resolve `.local` names. Peers are the user's own machines on a LAN or Tailscale | Accepted |
+| D-15 | The host re-checks permissions on a timer, not only on incoming messages | A viewer that goes quiet must not keep a revoked permission. Reading moved to its own task because a half-read frame cannot be cancelled | Accepted |
 
 ## 8. Open questions
 
-- Video frames from Rust to the Electron renderer: only needed if we capture in Rust but decode in Chromium. Plan is WebRTC end to end, so the addon carries signaling and permissions, not pixels. Confirm in M3b.
+- Hardware encoders: each platform encoder will sit behind the same shape as `H264Encoder`. Decide per platform whether to bind natively or use a crate.
+- Patent licensing of the software H.264 fallback. OpenH264 built from source carries no patent grant (Cisco's grant covers only their prebuilt binary). Fine for personal use, revisit before distributing.
 - Swift Noise implementation: port `snow`'s construction, or use an existing Swift Noise library?
 - Do permissions need finer grain later, for example allow-listed apps for `input`, or time-limited grants?
 - Self-hosted relay for off-Tailscale use: build, or document Tailscale and stop there?
@@ -323,5 +352,6 @@ Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
 | Date | Change |
 | --- | --- |
 | 2026-10-19 | M1 complete: protocol, identity, pairing, secure channel, CLI, tests, CI |
+| 2026-10-20 | M3b complete: H.264 over WebRTC, permission gated and timer enforced, Electron viewer. Source is a test pattern. Screen capture and input are M3c and M3d. Protocol version 3 |
 | 2026-10-20 | M3a complete: `tether-node` bridge and the Electron desktop app (pair, connect, host, permissions) |
 | 2026-10-19 | M2 complete: per-device permissions, live trust reload, protocol version 2. Desktop client set to Electron. Later milestones renumbered |

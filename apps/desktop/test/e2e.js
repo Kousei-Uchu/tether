@@ -35,7 +35,7 @@ async function run() {
   const js = (code) => win.webContents.executeJavaScript(code);
 
   const hostDev = new Device(hostHome, 'host-pc');
-  const handle = await hostDev.listen('127.0.0.1:0', { grant: ['view', 'input'] });
+  const handle = await hostDev.listen('127.0.0.1:0', { grant: ['view', 'input'] }, 'test-pattern');
 
   // Pair through the UI.
   await js(`document.getElementById('address').value = ${JSON.stringify(handle.address)}`);
@@ -56,6 +56,43 @@ async function run() {
   // The host grants media; the UI picks it up on its next poll (every 3 seconds).
   hostDev.grant(hostDev.peers()[0].fingerprint, ['media']);
   await waitFor(win, `document.querySelectorAll('#conn-perms .chip.on').length === 3`, 'live grant', 6000);
+
+  // Watch the test video. The host draws a 16 bit frame counter along the bottom edge; read it
+  // back out of the decoded picture twice to prove frames really are arriving and advancing.
+  await js(`document.getElementById('show-screen').click()`);
+  await waitFor(
+    win,
+    `(() => { const v = document.getElementById('screen'); return !v.hidden && v.videoWidth > 0 && v.readyState >= 2; })()`,
+    'video to start playing',
+    20000,
+  );
+  const readCounter = () =>
+    js(`(() => {
+      const v = document.getElementById('screen');
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth; c.height = v.videoHeight;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(v, 0, 0);
+      const block = c.width / 16, y = c.height - 16;
+      let n = 0;
+      for (let bit = 0; bit < 16; bit++) {
+        const d = ctx.getImageData(Math.floor(bit * block + block / 2), y, 1, 1).data;
+        n = n * 2 + ((d[0] + d[1] + d[2]) / 3 > 127 ? 1 : 0);
+      }
+      return { n, w: c.width, h: c.height };
+    })()`);
+  const first = await readCounter();
+  if (first.w !== 960 || first.h !== 540) throw new Error(`unexpected video size ${first.w}x${first.h}`);
+  await sleep(1500);
+  const second = await readCounter();
+  if (!(second.n > first.n)) throw new Error(`video is not advancing: ${first.n} then ${second.n}`);
+  console.log(`video ok: frame counter ${first.n} then ${second.n}`);
+
+  // Taking the view permission away stops the viewer in the window.
+  hostDev.revoke(hostDev.peers()[0].fingerprint, ['view']);
+  await waitFor(win, `document.getElementById('show-screen').disabled && document.getElementById('screen').hidden`, 'viewer to stop after revoke', 8000);
+  hostDev.grant(hostDev.peers()[0].fingerprint, ['view']);
+  await waitFor(win, `!document.getElementById('show-screen').disabled`, 'viewing to be allowed again', 8000);
 
   // Host from the UI too.
   await js(`document.getElementById('bind').value = '127.0.0.1:0'`);

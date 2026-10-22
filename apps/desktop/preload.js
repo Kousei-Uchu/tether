@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('tether', {
   connect: (address) => call('connect', address),
   disconnect: () => call('disconnect'),
   pollConnection: () => call('connection:poll'),
+  requestVideo: (offer) => call('media:offer', offer),
   startHost: (options) => call('host:start', options),
   stopHost: () => call('host:stop'),
   pollHost: () => call('host:poll'),

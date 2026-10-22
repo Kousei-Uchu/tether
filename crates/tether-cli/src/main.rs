@@ -55,6 +55,10 @@ enum Cmd {
         /// power, files (comma separated), or `all`. Change it later with `peers grant`.
         #[arg(long, default_value = "view")]
         grant: PermissionSet,
+        /// Let devices with the view permission watch a stream. Only `test-pattern` exists so
+        /// far; screen capture comes in a later step.
+        #[arg(long, value_parser = ["test-pattern"])]
+        video: Option<String>,
     },
     /// Pair with a host that is running `listen --pair`.
     Pair {
@@ -155,7 +159,8 @@ async fn run() -> Result<()> {
             pair,
             pair_ttl_secs,
             grant,
-        } => listen(ctx, bind, pair, pair_ttl_secs, grant).await,
+            video,
+        } => listen(ctx, bind, pair, pair_ttl_secs, grant, video).await,
         Cmd::Pair { addr, code } => pair_with(ctx, &addr, code).await,
         Cmd::Connect { addr, pings } => connect_to(ctx, &addr, pings).await,
         Cmd::Peers { action } => peers(ctx, action),
@@ -226,6 +231,7 @@ async fn listen(
     pair: bool,
     ttl_secs: u64,
     grant: PermissionSet,
+    video: Option<String>,
 ) -> Result<()> {
     let trust = TrustStore::load(ctx.paths.trust_file())?;
     let pairing = Arc::new(Mutex::new(None));
@@ -246,6 +252,11 @@ async fn listen(
         trust: Arc::new(Mutex::new(trust)),
         pairing,
         device_name: ctx.name,
+        media: video.map(|_| {
+            Arc::new(tether_media::VideoHost::test_pattern(
+                tether_media::MediaOptions::default(),
+            )) as Arc<dyn tether_core::media::MediaProvider>
+        }),
     });
 
     let listener = TcpListener::bind(&bind)

@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Bumped on any incompatible wire change. Peers must match exactly for now.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const DEFAULT_PORT: u16 = 7420;
 /// Upper bound for one decoded message. Larger messages are rejected by the channel.
 pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 pub const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 /// Mixed into the Noise handshake so a version mismatch fails the handshake itself.
-pub const PROLOGUE: &[u8] = b"tether/2";
+pub const PROLOGUE: &[u8] = b"tether/3";
 
 pub type Proof = [u8; 32];
 
@@ -107,6 +107,17 @@ pub enum Intent {
     Pair,
 }
 
+/// What a [`Message::Signal`] carries. Wire order is stable (append only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SignalKind {
+    /// Client to host: a WebRTC session description asking for the screen.
+    Offer,
+    /// Host to client: the matching answer.
+    Answer,
+    /// Host to client: the offer could not be served. The payload says why.
+    Error,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub version: u16,
@@ -144,6 +155,11 @@ pub enum Message {
     /// the grant changes while the session is open.
     Permissions {
         granted: Vec<Permission>,
+    },
+    /// WebRTC signaling carried over the authenticated channel. Needs the `view` permission.
+    Signal {
+        kind: SignalKind,
+        payload: String,
     },
 }
 
@@ -200,6 +216,10 @@ mod tests {
             Message::Permissions {
                 granted: Permission::ALL.to_vec(),
             },
+            Message::Signal {
+                kind: SignalKind::Error,
+                payload: "nope".into(),
+            },
         ];
         for m in msgs {
             let bytes = encode(&m).unwrap();
@@ -229,6 +249,14 @@ mod tests {
             })
             .unwrap(),
             vec![8, 2, 1, 4]
+        );
+        assert_eq!(
+            encode(&Message::Signal {
+                kind: SignalKind::Offer,
+                payload: "x".into()
+            })
+            .unwrap(),
+            vec![9, 0, 1, b'x']
         );
     }
 }

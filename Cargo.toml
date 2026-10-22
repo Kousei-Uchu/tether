@@ -5,6 +5,7 @@ members = [
     "crates/tether-core",
     "crates/tether-cli",
     "crates/tether-node",
+    "crates/tether-media",
 ]
 
 [workspace.package]
@@ -16,12 +17,15 @@ publish = false
 [workspace.dependencies]
 tether-proto = { path = "crates/tether-proto" }
 tether-core = { path = "crates/tether-core" }
+tether-media = { path = "crates/tether-media" }
 anyhow = "1"
+bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 directories = "5"
 gethostname = "0.5"
 hex = "0.4"
 hmac = "0.12"
+openh264 = "0.9"
 postcard = { version = "1", features = ["use-std"] }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -33,3 +37,12 @@ thiserror = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+webrtc = "0.14"
+
+# The H.264 encoder is C++ compiled from source. Unoptimised it cannot keep up with video,
+# so keep these optimised even in debug builds.
+[profile.dev.package.openh264-sys2]
+opt-level = 3
+
+[profile.dev.package.tether-media]
+opt-level = 3

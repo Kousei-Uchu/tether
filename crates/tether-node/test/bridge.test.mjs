@@ -94,3 +94,33 @@ test('stopping the host closes the port', async () => {
     rmSync(client.home, { recursive: true, force: true });
   }
 });
+
+test('video requests are refused without a source or without view', async () => {
+  const host = makeDevice('h2');
+  const client = makeDevice('c2');
+  try {
+    // A host that shares no video says so.
+    let handle = await host.device.listen('127.0.0.1:0', { grant: ['view'] });
+    await client.device.pair(handle.address, handle.pairingCode);
+    let conn = await client.device.connect(handle.address);
+    await assert.rejects(conn.requestVideo('v=0'), /not sharing/);
+    await conn.close();
+    handle.stop();
+
+    // A host that shares video still refuses a device that may not view.
+    handle = await host.device.listen('127.0.0.1:0', null, 'test-pattern');
+    host.device.revoke('c2', ['view']);
+    host.device.grant('c2', ['media']);
+    conn = await client.device.connect(handle.address);
+    assert.deepEqual(conn.permissions, ['media']);
+    await assert.rejects(conn.requestVideo('v=0'), /view/);
+    // The refusal does not end the session.
+    assert.ok((await conn.ping()) >= 0);
+    handle.stop();
+
+    await assert.rejects(host.device.listen('127.0.0.1:0', null, 'webcam'), /unknown video source/);
+  } finally {
+    rmSync(host.home, { recursive: true, force: true });
+    rmSync(client.home, { recursive: true, force: true });
+  }
+});

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 tether-core.workspace = true
+tether-media.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

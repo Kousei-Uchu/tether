@@ -39,13 +39,96 @@ async function loadIdentity() {
   $('device-fingerprint').textContent = info.fingerprint;
 }
 
+// ----- watching the screen -----
+let viewer = null;
+let mayViewNow = false;
+
+function waitForIce(pc, ms) {
+  return new Promise((resolve) => {
+    if (pc.iceGatheringState === 'complete') return resolve();
+    const done = () => {
+      pc.removeEventListener('icegatheringstatechange', check);
+      resolve();
+    };
+    const check = () => pc.iceGatheringState === 'complete' && done();
+    pc.addEventListener('icegatheringstatechange', check);
+    setTimeout(done, ms);
+  });
+}
+
+function stopVideo(message) {
+  if (viewer) {
+    viewer.onconnectionstatechange = null;
+    viewer.close();
+    viewer = null;
+  }
+  const video = $('screen');
+  video.srcObject = null;
+  video.hidden = true;
+  $('stop-screen').hidden = true;
+  $('show-screen').disabled = !mayViewNow;
+  if (message !== undefined) say('screen-msg', message);
+}
+
+async function startVideo() {
+  stopVideo();
+  say('screen-msg', 'Asking for the screen...');
+  $('show-screen').disabled = true;
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  viewer = pc;
+  try {
+    const transceiver = pc.addTransceiver('video', { direction: 'recvonly' });
+    // Hosts send H.264 only, so only offer that.
+    const h264 = RTCRtpReceiver.getCapabilities('video').codecs.filter((c) => c.mimeType === 'video/H264');
+    if (h264.length === 0) throw new Error('This computer cannot play H.264 video.');
+    transceiver.setCodecPreferences(h264);
+
+    pc.ontrack = (event) => {
+      const video = $('screen');
+      video.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+      video.hidden = false;
+      $('stop-screen').hidden = false;
+      say('screen-msg', '');
+    };
+    pc.onconnectionstatechange = () => {
+      if (viewer !== pc) return;
+      if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+        stopVideo('The video stopped.');
+      }
+    };
+
+    await pc.setLocalDescription(await pc.createOffer());
+    await waitForIce(pc, 3000);
+    const answer = await window.tether.requestVideo(pc.localDescription.sdp);
+    if (viewer !== pc) return;
+    await pc.setRemoteDescription({ type: 'answer', sdp: answer });
+  } catch (e) {
+    if (viewer === pc) stopVideo(e.message);
+  }
+}
+
+$('show-screen').addEventListener('click', startVideo);
+$('stop-screen').addEventListener('click', () => stopVideo(''));
+
 // ----- connecting -----
 let pollTimer = null;
 
 function showConnection(state) {
   const box = $('connection');
   box.hidden = !state.connected;
-  if (!state.connected) return;
+  mayViewNow = state.connected && state.permissions.includes('view');
+  if (!state.connected) {
+    stopVideo();
+    return;
+  }
+  const mayView = mayViewNow;
+  $('show-screen').disabled = !mayView || viewer !== null;
+  if (!mayView && viewer) stopVideo('The host turned off your access to its screen.');
+  if (!mayView && !viewer && !$('screen-msg').textContent) {
+    say('screen-msg', 'This device is not allowed to view the screen. Ask the host to grant it.');
+  } else if (mayView && $('screen-msg').textContent.startsWith('This device is not allowed')) {
+    say('screen-msg', '');
+  }
   $('conn-name').textContent = state.peer.name;
   $('conn-platform').textContent = state.peer.platform;
   $('conn-fingerprint').textContent = state.peer.fingerprint;
@@ -144,6 +227,7 @@ $('host-start').addEventListener('click', () =>
     const state = await window.tether.startHost({
       bind: $('bind').value.trim(),
       pairing: $('pairing').checked,
+      video: $('video').checked,
       grant: chosenGrant(),
     });
     showHost(state);

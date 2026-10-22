@@ -25,6 +25,7 @@ use tether_core::{
     session::{accept, connect, ClientMode, HostConfig, Outcome, Session},
     trust::TrustStore,
 };
+use tether_media::{MediaOptions, VideoHost};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{watch, Mutex, Semaphore},
@@ -219,12 +220,14 @@ impl Device {
         }
     }
 
-    /// Starts accepting connections. Pass `pairing` to also show a one-time pairing code.
+    /// Starts accepting connections. Pass `pairing` to also show a one-time pairing code, and
+    /// `video` (currently only `"test-pattern"`) to let permitted devices watch a stream.
     #[napi]
     pub async fn listen(
         &self,
         bind: String,
         pairing: Option<PairingOptions>,
+        video: Option<String>,
     ) -> Result<HostHandle> {
         let offer = match pairing {
             None => None,
@@ -237,12 +240,24 @@ impl Device {
                 Some(PairingOffer::new(ttl).with_grant(grant))
             }
         };
+        let media: Option<Arc<dyn tether_core::media::MediaProvider>> = match video.as_deref() {
+            None | Some("") | Some("none") => None,
+            Some("test-pattern") => {
+                Some(Arc::new(VideoHost::test_pattern(MediaOptions::default())))
+            }
+            Some(other) => {
+                return Err(err(format!(
+                    "unknown video source {other:?}; screen capture is not available yet"
+                )))
+            }
+        };
         let code = offer.as_ref().map(|o| o.display_code());
         let host = Arc::new(HostConfig {
             identity: self.identity.clone(),
             trust: Arc::new(StdMutex::new(self.store()?)),
             pairing: Arc::new(StdMutex::new(offer)),
             device_name: self.name.clone(),
+            media,
         });
 
         let listener = TcpListener::bind(&bind)
@@ -336,6 +351,15 @@ impl Connection {
                 Err(err(e))
             }
         }
+    }
+
+    /// Asks the host for its screen. `offer` is a WebRTC session description from the
+    /// viewer; the result is the host's answer. Needs the `view` permission.
+    #[napi]
+    pub async fn request_video(&self, offer: String) -> Result<String> {
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
+        session.request_video(offer).await.map_err(err)
     }
 
     #[napi]

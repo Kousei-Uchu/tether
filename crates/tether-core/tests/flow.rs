@@ -1,13 +1,17 @@
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tether_core::{
     channel::{Role, SecureChannel},
     identity::Identity,
+    media::{MediaAnswer, MediaFuture, MediaProvider},
     pairing::PairingOffer,
     permissions::PermissionSet,
-    session::{accept, connect, ClientMode, HostConfig, Outcome, SessionError},
+    session::{accept, connect, ClientMode, HostConfig, Outcome, PeerInfo, SessionError},
     trust::TrustStore,
 };
 use tether_proto::{Message, Permission};
@@ -35,6 +39,7 @@ fn host_config(d: &Device, offer: Option<PairingOffer>) -> HostConfig {
         trust: d.trust.clone(),
         pairing: Arc::new(Mutex::new(offer)),
         device_name: "host".into(),
+        media: None,
     }
 }
 
@@ -362,4 +367,172 @@ async fn authorize_is_the_gate_for_actions() {
         .authorize(&host, Permission::Input)
         .await
         .unwrap();
+}
+
+// ----- video signaling -----
+
+/// Stands in for the real WebRTC host: counts starts and stops.
+struct FakeMedia {
+    started: Arc<AtomicUsize>,
+    stopped: Arc<AtomicUsize>,
+}
+
+struct StopFlag(Arc<AtomicUsize>);
+
+impl Drop for StopFlag {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl MediaProvider for FakeMedia {
+    fn answer<'a>(&'a self, _peer: &'a PeerInfo, offer: String) -> MediaFuture<'a> {
+        Box::pin(async move {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            Ok(MediaAnswer {
+                sdp: format!("answer-for:{offer}"),
+                guard: Box::new(StopFlag(self.stopped.clone())),
+            })
+        })
+    }
+}
+
+fn with_media(host: &HostConfig) -> (Arc<HostConfig>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let started = Arc::new(AtomicUsize::new(0));
+    let stopped = Arc::new(AtomicUsize::new(0));
+    let cfg = HostConfig {
+        identity: host.identity.clone(),
+        trust: host.trust.clone(),
+        pairing: host.pairing.clone(),
+        device_name: host.device_name.clone(),
+        media: Some(Arc::new(FakeMedia {
+            started: started.clone(),
+            stopped: stopped.clone(),
+        })),
+    };
+    (Arc::new(cfg), started, stopped)
+}
+
+async fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+    for _ in 0..60 {
+        if cond() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+#[tokio::test]
+async fn video_needs_a_provider_and_the_view_permission() {
+    let host_dev = device();
+    let client_dev = device();
+
+    // A host that shares nothing says so.
+    let plain = pair_with_grant(&host_dev, &client_dev, None).await;
+    let (host_session, mut client_session) = open_session(&plain, &client_dev).await;
+    let h = plain.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+    let err = client_session
+        .request_video("offer".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SessionError::Signal(m) if m.contains("not sharing")));
+    client_session.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
+
+    // With a provider, a device that holds only `input` is refused.
+    let (shared, started, _stopped) = with_media(&plain);
+    external_store(&host_dev)
+        .change_permissions("client", |p| {
+            p.without(Permission::View).with(Permission::Input)
+        })
+        .unwrap();
+    let (host_session, mut client_session) = open_session(&shared, &client_dev).await;
+    let h = shared.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+    let err = client_session
+        .request_video("offer".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SessionError::Signal(m) if m.contains("view")));
+    assert_eq!(started.load(Ordering::SeqCst), 0);
+
+    // Granting view makes the same session work, with no reconnect.
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.with(Permission::View))
+        .unwrap();
+    let answer = client_session
+        .request_video("offer-2".into())
+        .await
+        .unwrap();
+    assert_eq!(answer, "answer-for:offer-2");
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    client_session.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn video_stops_when_the_session_ends_or_a_new_offer_arrives() {
+    let host_dev = device();
+    let client_dev = device();
+    let plain = pair_with_grant(&host_dev, &client_dev, None).await;
+    let (shared, started, stopped) = with_media(&plain);
+    let (host_session, mut client_session) = open_session(&shared, &client_dev).await;
+    let h = shared.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+
+    client_session.request_video("one".into()).await.unwrap();
+    assert_eq!(
+        (
+            started.load(Ordering::SeqCst),
+            stopped.load(Ordering::SeqCst)
+        ),
+        (1, 0)
+    );
+    client_session.request_video("two".into()).await.unwrap();
+    assert_eq!(
+        (
+            started.load(Ordering::SeqCst),
+            stopped.load(Ordering::SeqCst)
+        ),
+        (2, 1)
+    );
+
+    client_session.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
+    assert_eq!(stopped.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn revoking_view_stops_video_even_if_the_client_stays_silent() {
+    let host_dev = device();
+    let client_dev = device();
+    let plain = pair_with_grant(&host_dev, &client_dev, None).await;
+    let (shared, _started, stopped) = with_media(&plain);
+    let (host_session, mut client_session) = open_session(&shared, &client_dev).await;
+    let h = shared.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+
+    client_session.request_video("offer".into()).await.unwrap();
+    assert_eq!(stopped.load(Ordering::SeqCst), 0);
+
+    // The client sends nothing from here on. The host's own timer must notice.
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.without(Permission::View))
+        .unwrap();
+    wait_until("video to stop", || stopped.load(Ordering::SeqCst) == 1).await;
+
+    // The client is told, and a fresh request is refused.
+    client_session.ping(1).await.unwrap();
+    assert!(!client_session.permissions.contains(Permission::View));
+    let err = client_session
+        .request_video("again".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SessionError::Signal(m) if m.contains("view")));
+
+    // Unpairing while idle also ends the session by itself.
+    external_store(&host_dev).remove("client").unwrap();
+    assert!(matches!(serve.await.unwrap(), Err(SessionError::Revoked)));
 }

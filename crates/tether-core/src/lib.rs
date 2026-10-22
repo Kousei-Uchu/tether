@@ -2,6 +2,7 @@
 
 pub mod channel;
 pub mod identity;
+pub mod media;
 pub mod pairing;
 pub mod paths;
 pub mod permissions;
