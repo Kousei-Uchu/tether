@@ -35,7 +35,7 @@ async function run() {
   const js = (code) => win.webContents.executeJavaScript(code);
 
   const hostDev = new Device(hostHome, 'host-pc');
-  const handle = await hostDev.listen('127.0.0.1:0', { grant: ['view', 'input'] }, 'test-pattern');
+  const handle = await hostDev.listen('127.0.0.1:0', { grant: ['view', 'input'] }, 'test-pattern', true);
 
   // Pair through the UI.
   await js(`document.getElementById('address').value = ${JSON.stringify(handle.address)}`);
@@ -87,6 +87,59 @@ async function run() {
   const second = await readCounter();
   if (!(second.n > first.n)) throw new Error(`video is not advancing: ${first.n} then ${second.n}`);
   console.log(`video ok: frame counter ${first.n} then ${second.n}`);
+
+  // Control the host. The host here injects into the very X display this window lives on, so
+  // the events come back as real (trusted) browser events and prove the whole chain.
+  await js(`(() => {
+    window.__seen = { moves: [], keys: [] };
+    document.addEventListener('mousemove', (e) => e.isTrusted && window.__seen.moves.push([e.screenX, e.screenY]), true);
+    document.addEventListener('keydown', (e) => e.isTrusted && window.__seen.keys.push(e.code), true);
+    document.getElementById('code').focus();   // keep DOM focus off the video so injected keys do not echo
+    const box = document.getElementById('control');
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
+  })()`);
+  win.focus();
+  await js(`document.getElementById('code').focus()`);
+  const { width: sw, height: sh } = require('electron').screen.getPrimaryDisplay().size;
+  const screenSize = { w: sw, h: sh };
+
+  // A synthetic mouse move over the middle of the picture, near its top edge.
+  const sendAt = (nx, ny) => js(`(() => {
+    const v = document.getElementById('screen');
+    const b = v.getBoundingClientRect();
+    const s = Math.min(b.width / v.videoWidth, b.height / v.videoHeight);
+    const cw = v.videoWidth * s, ch = v.videoHeight * s;
+    const left = b.left + (b.width - cw) / 2, top = b.top + (b.height - ch) / 2;
+    v.dispatchEvent(new MouseEvent('mousemove', { clientX: left + ${nx} * cw, clientY: top + ${ny} * ch, bubbles: true }));
+  })()`);
+  // Aim at the header strip of this window, which is not part of the video, so the pointer
+  // arrives as a real event here without feeding back into the viewer.
+  const bounds = win.getBounds();
+  const want = [bounds.x + 400, bounds.y + 20];
+  await sendAt(want[0] / screenSize.w, want[1] / screenSize.h);
+  await waitFor(
+    win,
+    `window.__seen.moves.some(([x, y]) => Math.abs(x - ${want[0]}) <= 3 && Math.abs(y - ${want[1]}) <= 3)`,
+    `the pointer to reach ${want.map(Math.round)} on this screen`,
+    8000,
+  );
+  console.log(`input ok: pointer arrived near ${want.map(Math.round)}`);
+
+  // A key press and release.
+  await js(`(() => {
+    const v = document.getElementById('screen');
+    v.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyQ', key: 'q', bubbles: true }));
+    v.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyQ', key: 'q', bubbles: true }));
+  })()`);
+  await waitFor(win, `window.__seen.keys.includes('KeyQ')`, 'the key press to arrive', 8000);
+  console.log('input ok: key arrived');
+
+  // Taking the input permission away disables the control box in the window.
+  hostDev.revoke(hostDev.peers()[0].fingerprint, ['input']);
+  await waitFor(win, `document.getElementById('control').disabled && !document.getElementById('control').checked`, 'control to switch off after revoke', 8000);
+  hostDev.grant(hostDev.peers()[0].fingerprint, ['input']);
+  await waitFor(win, `!document.getElementById('control').disabled`, 'control to be allowed again', 8000);
 
   // Taking the view permission away stops the viewer in the window.
   hostDev.revoke(hostDev.peers()[0].fingerprint, ['view']);

@@ -124,3 +124,42 @@ test('video requests are refused without a source or without view', async () => 
     rmSync(client.home, { recursive: true, force: true });
   }
 });
+
+test('input events are validated, gated, and refusals come back as notices', async () => {
+  const host = makeDevice('h3');
+  const client = makeDevice('c3');
+  try {
+    // Remote control is off on this host, and the device holds only `view`.
+    const handle = await host.device.listen('127.0.0.1:0', { grant: ['view'] });
+    await client.device.pair(handle.address, handle.pairingCode);
+    const conn = await client.device.connect(handle.address);
+
+    // Bad events never leave the machine.
+    await assert.rejects(conn.sendInput({ kind: 'key', code: 'NotAKey', down: true }), /unsupported key/);
+    await assert.rejects(conn.sendInput({ kind: 'wat' }), /unknown input kind/);
+    await assert.rejects(conn.sendInput({ kind: 'button', button: 'left' }), /missing `down`/);
+    await assert.rejects(conn.sendInput({ kind: 'move', x: 0.5 }), /missing `y`/);
+
+    // Without the permission the host drops the event and says so, once.
+    for (let i = 0; i < 3; i++) await conn.sendInput({ kind: 'key', code: 'KeyA', down: true });
+    await conn.ping();
+    const first = await conn.takeNotices();
+    assert.equal(first.length, 1);
+    assert.match(first[0], /not allowed.*input/);
+    assert.deepEqual(await conn.takeNotices(), []);
+
+    // With the permission but remote control off on the host, the notice says that instead.
+    host.device.grant('c3', ['input']);
+    await conn.ping();
+    await conn.sendInput({ kind: 'move', x: 0.5, y: 0.5 });
+    await conn.ping();
+    const second = await conn.takeNotices();
+    assert.equal(second.length, 1);
+    assert.match(second[0], /turned off/);
+
+    handle.stop();
+  } finally {
+    rmSync(host.home, { recursive: true, force: true });
+    rmSync(client.home, { recursive: true, force: true });
+  }
+});

@@ -18,6 +18,15 @@ export interface HostEvent {
   message: string;
 }
 
+/** `move`: x,y are 0..1 of the display. `delta`: dx,dy in pixels. `scroll`: lines, positive is down or right. */
+export type InputEvent =
+  | { kind: 'move'; x: number; y: number }
+  | { kind: 'delta'; dx: number; dy: number }
+  | { kind: 'button'; button: 'left' | 'right' | 'middle' | 'back' | 'forward'; down: boolean }
+  | { kind: 'scroll'; dx?: number; dy?: number }
+  | { kind: 'key'; code: string; down: boolean }
+  | { kind: 'text'; text: string };
+
 export type PermissionName = 'view' | 'input' | 'media' | 'power' | 'files';
 
 /** This machine's identity and trust store. */
@@ -35,7 +44,13 @@ export class Device {
   pair(address: string, code: string): Promise<PeerSummary>;
   connect(address: string): Promise<Connection>;
   /** `video` lets permitted devices watch a stream. Only "test-pattern" exists so far. */
-  listen(bind: string, pairing?: PairingOptions | null, video?: string | null): Promise<HostHandle>;
+  /** `input: true` lets devices with the "input" permission control this computer. Off by default. */
+  listen(
+    bind: string,
+    pairing?: PairingOptions | null,
+    video?: string | null,
+    input?: boolean | null,
+  ): Promise<HostHandle>;
 }
 
 export class Connection {
@@ -44,6 +59,10 @@ export class Connection {
   readonly permissions: string[];
   /** Round trip time in milliseconds. */
   ping(): Promise<number>;
+  /** Sends one mouse or keyboard event. Refusals come back later through takeNotices(). */
+  sendInput(event: InputEvent): Promise<void>;
+  /** Messages from the host for the person to read. Collected during ping(). */
+  takeNotices(): Promise<string[]>;
   /** Sends a WebRTC offer, resolves with the host's answer. Needs the "view" permission. */
   requestVideo(offer: string): Promise<string>;
   close(): Promise<void>;

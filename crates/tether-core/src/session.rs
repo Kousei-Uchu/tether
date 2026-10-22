@@ -7,16 +7,20 @@
 use crate::{
     channel::{ChannelError, Role, SecureChannel, SecureSender},
     identity::{fingerprint, Identity},
+    input::{InputProvider, InputSink},
     media::MediaProvider,
     pairing::{self, PairingOffer, ProofRole},
     permissions::{PermissionDenied, PermissionSet},
     trust::{TrustStore, TrustedPeer},
 };
 use std::{
+    collections::HashSet,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tether_proto::{Hello, Intent, Message, Permission, Platform, SignalKind, PROTOCOL_VERSION};
+use tether_proto::{
+    Hello, InputEvent, Intent, Message, Permission, Platform, SignalKind, PROTOCOL_VERSION,
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::mpsc,
@@ -30,6 +34,11 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often a host re-checks a connected device against the trust file. This bounds how long
 /// a revoked permission, such as `view`, keeps working on a session that is otherwise quiet.
 pub const PERMISSION_POLL: Duration = Duration::from_secs(1);
+/// Pointer moves and scrolls beyond this many per second are dropped by the host. Presses and
+/// releases are never dropped.
+pub const MAX_DROPPABLE_INPUT_PER_SEC: u32 = 1500;
+/// After the host fails to open its input injector, it waits this long before trying again.
+const INPUT_RETRY: Duration = Duration::from_secs(2);
 /// How long a client waits for the host to answer a video offer.
 pub const SIGNAL_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -84,6 +93,8 @@ pub struct Session<S> {
     pub permissions: PermissionSet,
     /// Host side: the running video session, if any. Dropping it stops the video.
     media_guard: Option<Box<dyn Send>>,
+    /// Client side: notices the host sent, until `take_notices` collects them.
+    notices: Vec<String>,
 }
 
 pub enum Outcome<S> {
@@ -101,6 +112,9 @@ pub struct HostConfig {
     pub device_name: String,
     /// Where video comes from. `None` means this host does not share its screen.
     pub media: Option<Arc<dyn MediaProvider>>,
+    /// Whether this host lets devices control its mouse and keyboard. `None` means no, even
+    /// for a device that holds the `input` permission.
+    pub input: Option<Arc<dyn InputProvider>>,
 }
 
 impl HostConfig {
@@ -180,6 +194,7 @@ where
                 peer,
                 permissions,
                 media_guard: None,
+                notices: Vec::new(),
             }))
         }
         Intent::Pair => {
@@ -310,6 +325,7 @@ where
                 peer,
                 permissions: granted.into(),
                 media_guard: None,
+                notices: Vec::new(),
             }))
         }
         ClientMode::Pair { code } => {
@@ -365,10 +381,30 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
             {
                 Message::Pong { nonce: n } if n == nonce => return Ok(start.elapsed()),
                 Message::Permissions { granted } => self.permissions = granted.into(),
+                Message::Notice { text } => self.push_notice(text),
                 Message::Bye { reason } => return Err(SessionError::Rejected(reason)),
                 _ => continue,
             }
         }
+    }
+
+    fn push_notice(&mut self, text: String) {
+        if self.notices.len() < 20 {
+            self.notices.push(text);
+        }
+    }
+
+    /// Messages the host sent for the person to read, such as "remote control is turned off".
+    /// They arrive while waiting for replies, so call this after `ping`.
+    pub fn take_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notices)
+    }
+
+    /// Client side: sends one mouse or keyboard event. The host drops it, and says why in a
+    /// notice, if this device lacks the permission or the host has not enabled remote control.
+    pub async fn send_input(&mut self, event: InputEvent) -> Result<(), SessionError> {
+        self.channel.send(&Message::Input(event)).await?;
+        Ok(())
     }
 
     /// Reads whatever the host sent before hanging up, looking for its reason.
@@ -415,6 +451,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
                     payload,
                 } => return Err(SessionError::Signal(payload)),
                 Message::Permissions { granted } => self.permissions = granted.into(),
+                Message::Notice { text } => self.push_notice(text),
                 Message::Bye { reason } => return Err(SessionError::Rejected(reason)),
                 _ => continue,
             }
@@ -480,15 +517,17 @@ impl<S> Session<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    /// Host side loop. Answers pings and video offers until the peer leaves, goes idle or is
-    /// revoked. Every `PERMISSION_POLL` it re-checks the device against the trust file, so a
-    /// revoked grant takes effect, and video stops, even if the peer says nothing.
+    /// Host side loop. Answers pings, video offers and input until the peer leaves, goes idle
+    /// or is revoked. Every `PERMISSION_POLL` it re-checks the device against the trust file,
+    /// so a revoked grant takes effect, and video and input stop, even if the peer says
+    /// nothing.
     pub async fn serve(self, host: &HostConfig) -> Result<(), SessionError> {
         let Session {
             channel,
             peer,
             mut permissions,
-            mut media_guard,
+            media_guard,
+            ..
         } = self;
         let SecureChannel {
             mut sender,
@@ -498,7 +537,7 @@ where
 
         // Reading happens in its own task so the loop below can also wake on a timer.
         // (A half-read frame must never be cancelled, so the read is not part of the select.)
-        let (tx, mut rx) = mpsc::channel(16);
+        let (tx, mut rx) = mpsc::channel(64);
         let reader = tokio::spawn(async move {
             let mut receiver = receiver;
             loop {
@@ -510,19 +549,84 @@ where
             }
         });
 
+        let mut state = HostState::new(media_guard);
         let result = serve_loop(
             host,
             &peer,
             &mut permissions,
             &mut sender,
             &mut rx,
-            &mut media_guard,
+            &mut state,
         )
         .await;
         reader.abort();
-        drop(media_guard);
+        // Dropping the state ends video and releases any held keys and buttons.
+        drop(state);
         result
     }
+}
+
+/// Everything the host holds open for one connected device.
+struct HostState {
+    media: Option<Box<dyn Send>>,
+    input: Option<Box<dyn InputSink>>,
+    /// Notices already sent, so each reason is told once until permissions change.
+    notified: HashSet<&'static str>,
+    window_start: Instant,
+    window_count: u32,
+    input_retry_at: Option<Instant>,
+}
+
+impl HostState {
+    fn new(media: Option<Box<dyn Send>>) -> Self {
+        Self {
+            media,
+            input: None,
+            notified: HashSet::new(),
+            window_start: Instant::now(),
+            window_count: 0,
+            input_retry_at: None,
+        }
+    }
+
+    /// Closes whatever the current permissions no longer allow.
+    fn enforce(&mut self, p: PermissionSet) {
+        if !p.contains(Permission::View) {
+            self.media = None;
+        }
+        if !p.contains(Permission::Input) && !p.contains(Permission::Media) {
+            self.input = None;
+        }
+    }
+
+    /// True if a droppable event fits in the current one second budget.
+    fn within_rate(&mut self) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.window_start) >= Duration::from_secs(1) {
+            self.window_start = now;
+            self.window_count = 0;
+        }
+        self.window_count += 1;
+        self.window_count <= MAX_DROPPABLE_INPUT_PER_SEC
+    }
+}
+
+/// Re-reads permissions, and if they changed, forgets which notices were sent and closes
+/// whatever is no longer allowed.
+async fn sync_permissions<W: AsyncWrite + Unpin>(
+    host: &HostConfig,
+    peer: &PeerInfo,
+    permissions: &mut PermissionSet,
+    sender: &mut SecureSender<W>,
+    state: &mut HostState,
+) -> Result<(), SessionError> {
+    let before = *permissions;
+    apply_permissions(host, &peer.public_key, permissions, sender).await?;
+    if *permissions != before {
+        state.notified.clear();
+    }
+    state.enforce(*permissions);
+    Ok(())
 }
 
 async fn serve_loop<W: AsyncWrite + Unpin>(
@@ -531,7 +635,7 @@ async fn serve_loop<W: AsyncWrite + Unpin>(
     permissions: &mut PermissionSet,
     sender: &mut SecureSender<W>,
     rx: &mut mpsc::Receiver<Result<Message, ChannelError>>,
-    media: &mut Option<Box<dyn Send>>,
+    state: &mut HostState,
 ) -> Result<(), SessionError> {
     let mut tick = interval(PERMISSION_POLL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -540,10 +644,7 @@ async fn serve_loop<W: AsyncWrite + Unpin>(
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                apply_permissions(host, &peer.public_key, permissions, sender).await?;
-                if !permissions.contains(Permission::View) {
-                    *media = None;
-                }
+                sync_permissions(host, peer, permissions, sender, state).await?;
                 if last_heard.elapsed() > IDLE_TIMEOUT {
                     return Err(SessionError::Timeout);
                 }
@@ -555,30 +656,87 @@ async fn serve_loop<W: AsyncWrite + Unpin>(
                     Some(Ok(m)) => m,
                 };
                 last_heard = Instant::now();
-                apply_permissions(host, &peer.public_key, permissions, sender).await?;
-                if !permissions.contains(Permission::View) {
-                    *media = None;
-                }
+                sync_permissions(host, peer, permissions, sender, state).await?;
                 match msg {
                     Message::Ping { nonce } => sender.send(&Message::Pong { nonce }).await?,
                     Message::Bye { .. } => return Ok(()),
                     Message::Signal { kind: SignalKind::Offer, payload } => {
                         // A new offer replaces any running video.
-                        *media = None;
+                        state.media = None;
                         let reply = match offer_reply(host, peer, *permissions, payload).await {
                             Ok((sdp, guard)) => {
-                                *media = Some(guard);
+                                state.media = Some(guard);
                                 Message::Signal { kind: SignalKind::Answer, payload: sdp }
                             }
                             Err(reason) => Message::Signal { kind: SignalKind::Error, payload: reason },
                         };
                         sender.send(&reply).await?;
                     }
+                    Message::Input(event) => {
+                        handle_input(host, peer, *permissions, sender, state, event).await?;
+                    }
                     other => tracing::debug!(?other, "ignoring unexpected message"),
                 }
             }
         }
     }
+}
+
+/// Tells the client something once. Later identical reasons stay quiet until permissions
+/// change, so a stream of mouse moves cannot turn into a stream of notices.
+async fn notify_once<W: AsyncWrite + Unpin>(
+    sender: &mut SecureSender<W>,
+    state: &mut HostState,
+    reason: &'static str,
+    text: String,
+) -> Result<(), SessionError> {
+    if state.notified.insert(reason) {
+        sender.send(&Message::Notice { text }).await?;
+    }
+    Ok(())
+}
+
+async fn handle_input<W: AsyncWrite + Unpin>(
+    host: &HostConfig,
+    peer: &PeerInfo,
+    permissions: PermissionSet,
+    sender: &mut SecureSender<W>,
+    state: &mut HostState,
+    event: InputEvent,
+) -> Result<(), SessionError> {
+    let needed = event.required_permission();
+    if !permissions.contains(needed) {
+        let text = format!("This device is not allowed to use `{needed}` on the host.");
+        return notify_once(sender, state, "denied", text).await;
+    }
+    let Some(provider) = &host.input else {
+        let text = "Remote control is turned off on the host.".to_owned();
+        return notify_once(sender, state, "off", text).await;
+    };
+    if event.is_droppable() && !state.within_rate() {
+        return Ok(());
+    }
+    if state.input.is_none() {
+        if state.input_retry_at.is_some_and(|at| Instant::now() < at) {
+            return Ok(());
+        }
+        match provider.open(peer) {
+            Ok(sink) => {
+                state.input = Some(sink);
+                state.input_retry_at = None;
+            }
+            Err(reason) => {
+                state.input_retry_at = Some(Instant::now() + INPUT_RETRY);
+                return notify_once(sender, state, "open", reason).await;
+            }
+        }
+    }
+    if let Some(sink) = state.input.as_mut() {
+        if let Err(reason) = sink.apply(event) {
+            return notify_once(sender, state, "apply", reason).await;
+        }
+    }
+    Ok(())
 }
 
 async fn offer_reply(

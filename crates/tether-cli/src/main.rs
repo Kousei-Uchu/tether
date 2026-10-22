@@ -59,6 +59,10 @@ enum Cmd {
         /// far; screen capture comes in a later step.
         #[arg(long, value_parser = ["test-pattern"])]
         video: Option<String>,
+        /// Let devices that hold the input permission control this computer's mouse and
+        /// keyboard. Off unless you pass this.
+        #[arg(long)]
+        input: bool,
     },
     /// Pair with a host that is running `listen --pair`.
     Pair {
@@ -160,7 +164,8 @@ async fn run() -> Result<()> {
             pair_ttl_secs,
             grant,
             video,
-        } => listen(ctx, bind, pair, pair_ttl_secs, grant, video).await,
+            input,
+        } => listen(ctx, bind, pair, pair_ttl_secs, grant, video, input).await,
         Cmd::Pair { addr, code } => pair_with(ctx, &addr, code).await,
         Cmd::Connect { addr, pings } => connect_to(ctx, &addr, pings).await,
         Cmd::Peers { action } => peers(ctx, action),
@@ -232,6 +237,7 @@ async fn listen(
     ttl_secs: u64,
     grant: PermissionSet,
     video: Option<String>,
+    input: bool,
 ) -> Result<()> {
     let trust = TrustStore::load(ctx.paths.trust_file())?;
     let pairing = Arc::new(Mutex::new(None));
@@ -256,6 +262,9 @@ async fn listen(
             Arc::new(tether_media::VideoHost::test_pattern(
                 tether_media::MediaOptions::default(),
             )) as Arc<dyn tether_core::media::MediaProvider>
+        }),
+        input: input.then(|| {
+            Arc::new(tether_input::EnigoInput) as Arc<dyn tether_core::input::InputProvider>
         }),
     });
 

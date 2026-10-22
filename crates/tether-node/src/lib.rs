@@ -21,10 +21,11 @@ use tether_core::{
     pairing::PairingOffer,
     paths::{default_device_name, Paths},
     permissions::PermissionSet,
-    proto::{Permission, DEFAULT_PORT},
+    proto::{InputEvent, Key, MouseButton, Permission, DEFAULT_PORT},
     session::{accept, connect, ClientMode, HostConfig, Outcome, Session},
     trust::TrustStore,
 };
+use tether_input::EnigoInput;
 use tether_media::{MediaOptions, VideoHost};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -82,6 +83,64 @@ pub struct PairingOptions {
     pub grant: Option<Vec<String>>,
     /// Seconds the code stays valid. Defaults to 300.
     pub ttl_secs: Option<u32>,
+}
+
+/// One mouse or keyboard event. `kind` picks which other fields are used:
+/// `move` (x, y in 0..1 of the display), `delta` (dx, dy pixels), `button` (button, down),
+/// `scroll` (dx, dy lines, positive is down or right), `key` (code, down), `text` (text).
+#[napi(object)]
+pub struct InputEventJs {
+    pub kind: String,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub dx: Option<i32>,
+    pub dy: Option<i32>,
+    /// `left`, `right`, `middle`, `back` or `forward`.
+    pub button: Option<String>,
+    /// A DOM `KeyboardEvent.code`, for example `KeyA` or `ArrowUp`.
+    pub code: Option<String>,
+    pub down: Option<bool>,
+    pub text: Option<String>,
+}
+
+fn to_input_event(e: InputEventJs) -> Result<InputEvent> {
+    let need = |name: &str| err(format!("input event is missing `{name}`"));
+    let frac = |v: f64| (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
+    let lines = |v: i32| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    Ok(match e.kind.as_str() {
+        "move" => InputEvent::MouseMove {
+            x: frac(e.x.ok_or_else(|| need("x"))?),
+            y: frac(e.y.ok_or_else(|| need("y"))?),
+        },
+        "delta" => InputEvent::MouseDelta {
+            dx: lines(e.dx.ok_or_else(|| need("dx"))?),
+            dy: lines(e.dy.ok_or_else(|| need("dy"))?),
+        },
+        "scroll" => InputEvent::Scroll {
+            dx: lines(e.dx.unwrap_or(0)),
+            dy: lines(e.dy.unwrap_or(0)),
+        },
+        "button" => {
+            let name = e.button.ok_or_else(|| need("button"))?;
+            InputEvent::MouseButton {
+                button: MouseButton::from_name(&name)
+                    .ok_or_else(|| err(format!("unknown mouse button {name:?}")))?,
+                down: e.down.ok_or_else(|| need("down"))?,
+            }
+        }
+        "key" => {
+            let code = e.code.ok_or_else(|| need("code"))?;
+            InputEvent::Key {
+                key: Key::from_dom_code(&code)
+                    .ok_or_else(|| err(format!("unsupported key {code:?}")))?,
+                down: e.down.ok_or_else(|| need("down"))?,
+            }
+        }
+        "text" => InputEvent::Text {
+            text: e.text.ok_or_else(|| need("text"))?,
+        },
+        other => return Err(err(format!("unknown input kind {other:?}"))),
+    })
 }
 
 #[napi(object)]
@@ -221,13 +280,16 @@ impl Device {
     }
 
     /// Starts accepting connections. Pass `pairing` to also show a one-time pairing code, and
-    /// `video` (currently only `"test-pattern"`) to let permitted devices watch a stream.
+    /// `video` (currently only `"test-pattern"`) to let permitted devices watch a stream, and
+    /// `input` to let devices with the `input` permission control this computer's mouse and
+    /// keyboard. Remote control is off unless the host turns it on here.
     #[napi]
     pub async fn listen(
         &self,
         bind: String,
         pairing: Option<PairingOptions>,
         video: Option<String>,
+        input: Option<bool>,
     ) -> Result<HostHandle> {
         let offer = match pairing {
             None => None,
@@ -258,6 +320,9 @@ impl Device {
             pairing: Arc::new(StdMutex::new(offer)),
             device_name: self.name.clone(),
             media,
+            input: input
+                .unwrap_or(false)
+                .then(|| Arc::new(EnigoInput) as Arc<dyn tether_core::input::InputProvider>),
         });
 
         let listener = TcpListener::bind(&bind)
@@ -360,6 +425,30 @@ impl Connection {
         let mut guard = self.session.lock().await;
         let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
         session.request_video(offer).await.map_err(err)
+    }
+
+    /// Sends one mouse or keyboard event to the host. Fire and forget: if the host refuses it,
+    /// the reason arrives later through `takeNotices`.
+    #[napi]
+    pub async fn send_input(&self, event: InputEventJs) -> Result<()> {
+        let event = to_input_event(event)?;
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
+        if let Err(e) = session.send_input(event).await {
+            *guard = None;
+            return Err(err(e));
+        }
+        Ok(())
+    }
+
+    /// Messages from the host meant for the person, such as "remote control is turned off".
+    /// They are collected while waiting for replies, so call this after `ping`.
+    #[napi]
+    pub async fn take_notices(&self) -> Vec<String> {
+        match self.session.lock().await.as_mut() {
+            Some(session) => session.take_notices(),
+            None => Vec::new(),
+        }
     }
 
     #[napi]

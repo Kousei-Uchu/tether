@@ -62,7 +62,17 @@
               <button id="stop-screen" hidden>Stop video</button>
             </div>
             <p id="screen-msg" class="msg" role="status"></p>
-            <video id="screen" autoplay muted playsinline hidden></video>
+            <video id="screen" autoplay muted playsinline tabindex="0" hidden></video>
+            <div id="control-row" hidden>
+              <label class="check">
+                <input id="control" type="checkbox" />
+                Control this computer
+              </label>
+              <p class="hint">
+                Move the pointer over the video to control it. Click the video before typing,
+                and click anywhere else to take your keyboard back.
+              </p>
+            </div>
           </div>
         </div>
       </section>
@@ -83,6 +93,10 @@
           <label class="check">
             <input id="video" type="checkbox" checked />
             Share a test video with devices that may view (screen capture comes in a later step)
+          </label>
+          <label class="check">
+            <input id="allow-input" type="checkbox" />
+            Allow remote control: devices that may use input can move this computer's mouse and type on its keyboard
           </label>
           <fieldset id="grant-set">
             <legend>A device that pairs with the code may</legend>

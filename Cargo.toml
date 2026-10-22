@@ -6,6 +6,7 @@ members = [
     "crates/tether-cli",
     "crates/tether-node",
     "crates/tether-media",
+    "crates/tether-input",
 ]
 
 [workspace.package]
@@ -18,10 +19,12 @@ publish = false
 tether-proto = { path = "crates/tether-proto" }
 tether-core = { path = "crates/tether-core" }
 tether-media = { path = "crates/tether-media" }
+tether-input = { path = "crates/tether-input" }
 anyhow = "1"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 directories = "5"
+enigo = "0.6"
 gethostname = "0.5"
 hex = "0.4"
 hmac = "0.12"

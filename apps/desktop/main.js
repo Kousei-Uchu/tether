@@ -16,6 +16,54 @@ let connection = null;
 let host = null;
 let hostLog = [];
 
+// Mouse and keyboard events go to the host in order. Pointer moves are replaceable, so only
+// the latest waiting one is kept; everything else keeps its place in line.
+const INPUT_KINDS = new Set(['move', 'delta', 'button', 'scroll', 'key', 'text']);
+const inputQueue = [];
+let pendingMove = null;
+let inputBusy = false;
+
+function cleanInput(raw) {
+  if (!raw || typeof raw !== 'object' || !INPUT_KINDS.has(raw.kind)) return null;
+  const out = { kind: raw.kind };
+  for (const key of ['x', 'y', 'dx', 'dy']) if (typeof raw[key] === 'number') out[key] = raw[key];
+  for (const key of ['button', 'code', 'text']) if (typeof raw[key] === 'string') out[key] = raw[key];
+  if (typeof raw.down === 'boolean') out.down = raw.down;
+  return out;
+}
+
+function queueInput(raw) {
+  const event = cleanInput(raw);
+  if (!event || !connection) return;
+  if (event.kind === 'move') {
+    pendingMove = event;
+  } else {
+    if (pendingMove) {
+      inputQueue.push(pendingMove);
+      pendingMove = null;
+    }
+    if (inputQueue.length < 500) inputQueue.push(event);
+  }
+  pumpInput();
+}
+
+async function pumpInput() {
+  if (inputBusy) return;
+  inputBusy = true;
+  try {
+    while (connection && (inputQueue.length > 0 || pendingMove)) {
+      let event = inputQueue.shift();
+      if (!event) {
+        event = pendingMove;
+        pendingMove = null;
+      }
+      await connection.sendInput(event).catch(() => {});
+    }
+  } finally {
+    inputBusy = false;
+  }
+}
+
 function logHost(kind, message) {
   hostLog.push({ kind, message, at: Date.now() });
   if (hostLog.length > 100) hostLog = hostLog.slice(-100);
@@ -73,22 +121,25 @@ function registerIpc() {
     if (!connection) return { connected: false };
     try {
       const rttMs = await connection.ping();
-      return { ...connectionState(), rttMs };
+      const notices = await connection.takeNotices();
+      return { ...connectionState(), rttMs, notices };
     } catch (e) {
       connection = null;
       return { connected: false, lostReason: e instanceof Error ? e.message : String(e) };
     }
   });
 
+  ipcMain.on('input:send', (_event, raw) => queueInput(raw));
+
   handle('media:offer', (offer) => {
     if (!connection) throw new Error('Not connected.');
     return connection.requestVideo(String(offer));
   });
 
-  handle('host:start', async ({ bind, pairing, grant, video }) => {
+  handle('host:start', async ({ bind, pairing, grant, video, input }) => {
     if (host) throw new Error('Already accepting connections.');
     const options = pairing ? { grant: validPermissions(grant ?? ['view']) } : null;
-    host = await device.listen(String(bind), options, video ? 'test-pattern' : null);
+    host = await device.listen(String(bind), options, video ? 'test-pattern' : null, Boolean(input));
     hostLog = [];
     return hostState();
   });

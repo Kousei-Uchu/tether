@@ -6,8 +6,8 @@ the same commit as the code it describes.
 
 | Field | Value |
 | --- | --- |
-| Status | Milestone 2 of 8 complete, milestone 3 in progress (3a and 3b done) |
-| Protocol version | 3 |
+| Status | Milestone 2 of 8 complete, milestone 3 in progress (3a, 3b and 3d done) |
+| Protocol version | 4 |
 | Targets | Windows 10+, macOS 13+, iOS 17+ |
 | Core language | Rust (agent, protocol, crypto), SwiftUI (iPhone), Electron (desktop UI) |
 
@@ -48,7 +48,7 @@ Legend: `[x]` done, `[~]` in progress, `[ ]` not started.
 | R-1 | Devices pair once with a one-time code and public-key identity | M1 | [x] |
 | R-2 | All traffic is mutually authenticated and encrypted | M1 | [x] |
 | R-3 | Remote view of one display, PC to Mac and Mac to PC | M3 | [ ] |
-| R-4 | Mouse and keyboard injection on both OSes | M3 | [ ] |
+| R-4 | Mouse and keyboard injection on both OSes | M3d | [~] Built and verified against X11. Windows and macOS use the same code through `enigo` and are not yet run |
 | R-5 | System audio streaming, both directions | M4 | [ ] |
 | R-6 | iPhone trackpad, keyboard and media controller | M5 | [ ] |
 | R-7 | Wake from sleep through an always-on LAN relay | M6 | [ ] |
@@ -72,6 +72,7 @@ Legend: `[x]` done, `[~]` in progress, `[ ]` not started.
 | `tether-proto` | Wire types, shared by every component | Rust crate, ported to Swift later |
 | `tether-core` | Identity, trust store, pairing, secure channel | Rust crate |
 | `tether-media` | Host side video: frame sources, H.264 encoder, WebRTC session | Rust crate (webrtc-rs, OpenH264) |
+| `tether-input` | Host side mouse and keyboard injection, one thread per controlling device | Rust crate (enigo) |
 | `tether-node` | Exposes `tether-core` to JavaScript: pair, connect, host, permissions | Rust cdylib using napi-rs, loaded by Electron |
 
 ### 4.1.1 Desktop client notes
@@ -140,7 +141,7 @@ input forwarding when the cursor leaves an edge.
 
 ### 5.2 Secure channel
 
-- Noise `XX_25519_ChaChaPoly_BLAKE2s`, prologue `tether/3` (tracks the protocol version). XX authenticates both static
+- Noise `XX_25519_ChaChaPoly_BLAKE2s`, prologue `tether/4` (tracks the protocol version). XX authenticates both static
   keys and hides them from passive observers.
 - Framing: `u16` big endian length, then one Noise transport frame. Plaintext of a frame is
   one flag byte (0 more, 1 last) plus up to 65518 bytes of message. Messages are chunked
@@ -178,10 +179,14 @@ bump `PROTOCOL_VERSION` for any incompatible change. A unit test pins the indice
 | 7 | `Bye` | either | Clean close |
 | 8 | `Permissions` | host to client | What the client may do. Sent after `Ready` and again whenever the grant changes |
 | 9 | `Signal` | both | WebRTC offer (client), answer or error (host). The host answers only if the device holds `view` |
+| 10 | `Input` | client to host | One mouse or keyboard event. Needs `input`, or `media` for media keys, and remote control enabled on the host |
+| 11 | `Notice` | host to client | Something for the person to read, for example that remote control is off. Never ends the session |
 
 ### 5.5 Known limits
 
 - Clients must keep the session alive with pings (the desktop app pings every 3 seconds). A host drops a device it has not heard from for 60 seconds, including while video plays.
+- Keys are physical positions on a US keyboard (named like DOM `KeyboardEvent.code`). On a host with another layout the characters follow the host's layout. Use `Text` events to type exact characters. Left and right Alt and Meta share one key on the host.
+- On Windows, input cannot reach elevated windows, the UAC prompt or the lock screen unless the host runs elevated. On macOS the host app must be allowed under Accessibility, and Secure Input fields ignore injected keys. Wayland needs a portal and is not supported yet (X11 only on Linux).
 - Video has no audio yet, and one stream per viewer. Each viewer starts its own source and encoder.
 
 - No key rotation or revocation sync. Removing a peer is a local action on each device.
@@ -280,12 +285,24 @@ when the host revokes `view`. Met with the test pattern.
 
 Acceptance: the Mac sees the PC's screen and the PC sees the Mac's, at 30 fps on a LAN.
 
-### M3d. Input injection
+### M3d. Input injection (done, verified on Linux X11)
 
-- [ ] Mouse, keyboard and scroll over the control channel, gated by `input`
-- [ ] `SendInput` on Windows, `CGEvent` on macOS
+- [x] Protocol version 4: `Input` and `Notice` messages, a `Key` enum named after DOM key codes, mouse buttons, scroll, typed text
+- [x] Host injector behind a trait; `enigo` implementation (SendInput, CGEvent, XTEST) on a thread per device
+- [x] Remote control is a host switch, off by default (`--input`, or the checkbox), on top of the `input` permission
+- [x] Media keys need `media`, everything else needs `input`
+- [x] Pointer moves and scrolls are rate limited and dropped under load; presses and releases never are
+- [x] Everything held down is released when the device disconnects, loses the permission, or is unpaired
+- [x] The host tells the person why input was refused (not allowed, turned off, macOS permission), once per reason
+- [x] Electron: Control this computer, pointer as a fraction of the picture, wheel, keyboard on focus, release on blur
+- [x] Tests: protocol keys and wire bytes, session tests with a fake injector, a live injection test against Xvfb, bridge tests, and an Electron test where the injected pointer and key come back as real browser events
 
-Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
+Acceptance: a device with `input` controls the host's pointer and keyboard from the window, and
+loses control the moment the permission is revoked. Met on X11. Still to confirm on Windows
+and macOS, which also needs the macOS Accessibility permission.
+
+Input to pixel latency has not been measured yet, because there is no real screen to look at
+until M3c.
 
 ### M4. System audio
 
@@ -337,6 +354,9 @@ Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
 | D-12 | Video: H.264 over WebRTC, host in Rust (webrtc-rs 0.14), viewer is Chromium | Chromium decodes H.264 with hardware help and has a full WebRTC stack. The host offers H.264 only so negotiation is deterministic | Accepted |
 | D-13 | The host's sending transceiver is created before the viewer's offer is applied | In webrtc-rs 0.14, `add_track` after the offer makes a second, unnegotiated transceiver and the viewer never learns about the stream. Found by the loopback test | Accepted |
 | D-14 | Electron disables mDNS hiding of local IPs in WebRTC | The host cannot resolve `.local` names. Peers are the user's own machines on a LAN or Tailscale | Accepted |
+| D-16 | Remote control has its own host switch, separate from the `input` permission | Moving a real mouse is the most dangerous thing in the app. A paired device with `input` still does nothing unless the host opted in | Accepted |
+| D-17 | Pointer position is a fraction of the display, not pixels | The two screens differ in size, shape and scaling. The host converts to its own pixels | Accepted |
+| D-18 | One injector thread per device, owning what is held down | The OS handle is not `Send` everywhere, calls can block, and the thread is the one place that can release stuck keys | Accepted |
 | D-15 | The host re-checks permissions on a timer, not only on incoming messages | A viewer that goes quiet must not keep a revoked permission. Reading moved to its own task because a half-read frame cannot be cancelled | Accepted |
 
 ## 8. Open questions
@@ -352,6 +372,7 @@ Acceptance: control a remote desktop with under 100 ms input-to-pixel on a LAN.
 | Date | Change |
 | --- | --- |
 | 2026-10-19 | M1 complete: protocol, identity, pairing, secure channel, CLI, tests, CI |
+| 2026-10-21 | M3d complete: mouse and keyboard control, host switch, notices, release on revoke. Protocol version 4. Build order from here: iPhone app (M5), then screen capture Mac to PC, then PC to Mac (M3c) |
 | 2026-10-20 | M3b complete: H.264 over WebRTC, permission gated and timer enforced, Electron viewer. Source is a test pattern. Screen capture and input are M3c and M3d. Protocol version 3 |
 | 2026-10-20 | M3a complete: `tether-node` bridge and the Electron desktop app (pair, connect, host, permissions) |
 | 2026-10-19 | M2 complete: per-device permissions, live trust reload, protocol version 2. Desktop client set to Electron. Later milestones renumbered |

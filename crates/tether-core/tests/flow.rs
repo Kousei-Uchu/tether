@@ -8,13 +8,14 @@ use std::{
 use tether_core::{
     channel::{Role, SecureChannel},
     identity::Identity,
+    input::{InputProvider, InputSink},
     media::{MediaAnswer, MediaFuture, MediaProvider},
     pairing::PairingOffer,
     permissions::PermissionSet,
     session::{accept, connect, ClientMode, HostConfig, Outcome, PeerInfo, SessionError},
     trust::TrustStore,
 };
-use tether_proto::{Message, Permission};
+use tether_proto::{InputEvent, Key, Message, MouseButton, Permission};
 use tokio::io::duplex;
 
 struct Device {
@@ -40,6 +41,7 @@ fn host_config(d: &Device, offer: Option<PairingOffer>) -> HostConfig {
         pairing: Arc::new(Mutex::new(offer)),
         device_name: "host".into(),
         media: None,
+        input: None,
     }
 }
 
@@ -409,6 +411,7 @@ fn with_media(host: &HostConfig) -> (Arc<HostConfig>, Arc<AtomicUsize>, Arc<Atom
             started: started.clone(),
             stopped: stopped.clone(),
         })),
+        input: None,
     };
     (Arc::new(cfg), started, stopped)
 }
@@ -535,4 +538,241 @@ async fn revoking_view_stops_video_even_if_the_client_stays_silent() {
     // Unpairing while idle also ends the session by itself.
     external_store(&host_dev).remove("client").unwrap();
     assert!(matches!(serve.await.unwrap(), Err(SessionError::Revoked)));
+}
+
+// ----- mouse and keyboard -----
+
+#[derive(Clone, Default)]
+struct FakeInput {
+    applied: Arc<Mutex<Vec<InputEvent>>>,
+    released: Arc<AtomicUsize>,
+    fail_open: Option<String>,
+}
+
+struct FakeSink(FakeInput);
+
+impl InputSink for FakeSink {
+    fn apply(&mut self, event: InputEvent) -> Result<(), String> {
+        self.0.applied.lock().unwrap().push(event);
+        Ok(())
+    }
+}
+
+impl Drop for FakeSink {
+    fn drop(&mut self) {
+        self.0.released.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl InputProvider for FakeInput {
+    fn open(&self, _peer: &PeerInfo) -> Result<Box<dyn InputSink>, String> {
+        match &self.fail_open {
+            Some(reason) => Err(reason.clone()),
+            None => Ok(Box::new(FakeSink(self.clone()))),
+        }
+    }
+}
+
+fn with_input(host: &HostConfig, fake: Option<FakeInput>) -> Arc<HostConfig> {
+    Arc::new(HostConfig {
+        identity: host.identity.clone(),
+        trust: host.trust.clone(),
+        pairing: host.pairing.clone(),
+        device_name: host.device_name.clone(),
+        media: None,
+        input: fake.map(|f| Arc::new(f) as Arc<dyn InputProvider>),
+    })
+}
+
+fn key(k: Key, down: bool) -> InputEvent {
+    InputEvent::Key { key: k, down }
+}
+
+#[tokio::test]
+async fn input_is_gated_by_permission_and_by_the_host_switch() {
+    let host_dev = device();
+    let client_dev = device();
+    let plain = pair_with_grant(&host_dev, &client_dev, None).await; // view only
+    let fake = FakeInput::default();
+    let host = with_input(&plain, Some(fake.clone()));
+    let (host_session, mut client) = open_session(&host, &client_dev).await;
+    let h = host.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+
+    // Without `input` the events are dropped, and the person is told exactly once.
+    for _ in 0..5 {
+        client.send_input(key(Key::A, true)).await.unwrap();
+    }
+    client.ping(1).await.unwrap();
+    let notices = client.take_notices();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(notices[0].contains("input"));
+    assert!(fake.applied.lock().unwrap().is_empty());
+
+    // Granting `input` takes effect on the open session.
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.with(Permission::Input))
+        .unwrap();
+    client.ping(2).await.unwrap();
+    client
+        .send_input(InputEvent::MouseMove { x: 100, y: 200 })
+        .await
+        .unwrap();
+    client.send_input(key(Key::A, true)).await.unwrap();
+    client.send_input(key(Key::A, false)).await.unwrap();
+    client.ping(3).await.unwrap();
+    assert_eq!(
+        *fake.applied.lock().unwrap(),
+        vec![
+            InputEvent::MouseMove { x: 100, y: 200 },
+            key(Key::A, true),
+            key(Key::A, false)
+        ]
+    );
+
+    // Media keys need `media`, not `input`.
+    client.send_input(key(Key::VolumeUp, true)).await.unwrap();
+    client.ping(4).await.unwrap();
+    assert_eq!(fake.applied.lock().unwrap().len(), 3);
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.with(Permission::Media))
+        .unwrap();
+    client.ping(5).await.unwrap();
+    client.send_input(key(Key::VolumeUp, true)).await.unwrap();
+    client.ping(6).await.unwrap();
+    assert_eq!(
+        fake.applied.lock().unwrap().last(),
+        Some(&key(Key::VolumeUp, true))
+    );
+
+    client.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
+    assert_eq!(
+        fake.released.load(Ordering::SeqCst),
+        1,
+        "injector released on session end"
+    );
+}
+
+#[tokio::test]
+async fn a_host_with_remote_control_off_says_so() {
+    let host_dev = device();
+    let client_dev = device();
+    let plain = pair_with_grant(&host_dev, &client_dev, Some(PermissionSet::all())).await;
+    let host = with_input(&plain, None);
+    let (host_session, mut client) = open_session(&host, &client_dev).await;
+    let h = host.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+
+    client.send_input(key(Key::A, true)).await.unwrap();
+    client.ping(1).await.unwrap();
+    let notices = client.take_notices();
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0].contains("turned off"));
+    client.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn an_injector_that_cannot_open_explains_why() {
+    let host_dev = device();
+    let client_dev = device();
+    let plain = pair_with_grant(&host_dev, &client_dev, Some(PermissionSet::all())).await;
+    let fake = FakeInput {
+        fail_open: Some("Allow Tether under Accessibility, then try again.".into()),
+        ..Default::default()
+    };
+    let host = with_input(&plain, Some(fake.clone()));
+    let (host_session, mut client) = open_session(&host, &client_dev).await;
+    let h = host.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+
+    client
+        .send_input(InputEvent::MouseMove { x: 1, y: 1 })
+        .await
+        .unwrap();
+    client
+        .send_input(InputEvent::MouseMove { x: 2, y: 2 })
+        .await
+        .unwrap();
+    client.ping(1).await.unwrap();
+    assert_eq!(
+        client.take_notices(),
+        vec!["Allow Tether under Accessibility, then try again.".to_string()]
+    );
+    assert!(fake.applied.lock().unwrap().is_empty());
+    client.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn floods_of_moves_are_dropped_but_presses_never_are() {
+    let host_dev = device();
+    let client_dev = device();
+    let plain = pair_with_grant(&host_dev, &client_dev, Some(PermissionSet::all())).await;
+    let fake = FakeInput::default();
+    let host = with_input(&plain, Some(fake.clone()));
+    let (host_session, mut client) = open_session(&host, &client_dev).await;
+    let h = host.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+
+    for i in 0..4000u16 {
+        client
+            .send_input(InputEvent::MouseMove { x: i, y: i })
+            .await
+            .unwrap();
+    }
+    client.send_input(key(Key::Enter, true)).await.unwrap();
+    client
+        .send_input(InputEvent::MouseButton {
+            button: MouseButton::Left,
+            down: false,
+        })
+        .await
+        .unwrap();
+    client.ping(1).await.unwrap();
+
+    let applied = fake.applied.lock().unwrap().clone();
+    let moves = applied
+        .iter()
+        .filter(|e| matches!(e, InputEvent::MouseMove { .. }))
+        .count();
+    assert!(moves <= 1500 * 2, "{moves} moves got through"); // at most two one second windows
+    assert!(moves < 4000, "nothing was dropped");
+    assert!(applied.contains(&key(Key::Enter, true)));
+    assert!(applied.contains(&InputEvent::MouseButton {
+        button: MouseButton::Left,
+        down: false
+    }));
+    client.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn revoking_input_releases_the_injector_even_if_the_client_is_silent() {
+    let host_dev = device();
+    let client_dev = device();
+    let plain = pair_with_grant(&host_dev, &client_dev, Some(PermissionSet::all())).await;
+    let fake = FakeInput::default();
+    let host = with_input(&plain, Some(fake.clone()));
+    let (host_session, mut client) = open_session(&host, &client_dev).await;
+    let h = host.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+
+    client.send_input(key(Key::ShiftLeft, true)).await.unwrap(); // held down
+    client.ping(1).await.unwrap();
+    assert_eq!(fake.released.load(Ordering::SeqCst), 0);
+
+    external_store(&host_dev)
+        .change_permissions("client", |p| {
+            p.without(Permission::Input).without(Permission::Media)
+        })
+        .unwrap();
+    wait_until("the injector to be released", || {
+        fake.released.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    client.ping(2).await.unwrap();
+    client.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
 }

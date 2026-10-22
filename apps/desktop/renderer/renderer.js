@@ -42,6 +42,7 @@ async function loadIdentity() {
 // ----- watching the screen -----
 let viewer = null;
 let mayViewNow = false;
+let mayControlNow = false;
 
 function waitForIce(pc, ms) {
   return new Promise((resolve) => {
@@ -62,9 +63,11 @@ function stopVideo(message) {
     viewer.close();
     viewer = null;
   }
+  setControl(false);
   const video = $('screen');
   video.srcObject = null;
   video.hidden = true;
+  $('control-row').hidden = true;
   $('stop-screen').hidden = true;
   $('show-screen').disabled = !mayViewNow;
   if (message !== undefined) say('screen-msg', message);
@@ -87,6 +90,7 @@ async function startVideo() {
       const video = $('screen');
       video.srcObject = event.streams[0] ?? new MediaStream([event.track]);
       video.hidden = false;
+      $('control-row').hidden = false;
       $('stop-screen').hidden = false;
       say('screen-msg', '');
     };
@@ -107,6 +111,112 @@ async function startVideo() {
   }
 }
 
+// ----- controlling the host -----
+// Events from this page go to the host, which presses the real keys. Pointer positions are
+// sent as a fraction of the picture, so the two screens can differ in size and shape.
+const heldKeys = new Set();
+const heldButtons = new Set();
+let controlOn = false;
+let moveFrame = null;
+let lastPoint = null;
+const BUTTONS = ['left', 'middle', 'right', 'back', 'forward'];
+
+function send(event) {
+  window.tether.sendInput(event);
+}
+
+function pictureRect() {
+  const video = $('screen');
+  const box = video.getBoundingClientRect();
+  if (!video.videoWidth || !video.videoHeight) return null;
+  // The picture is letterboxed inside the element (object-fit: contain).
+  const scale = Math.min(box.width / video.videoWidth, box.height / video.videoHeight);
+  const width = video.videoWidth * scale;
+  const height = video.videoHeight * scale;
+  return { left: box.left + (box.width - width) / 2, top: box.top + (box.height - height) / 2, width, height };
+}
+
+function toFraction(event) {
+  const r = pictureRect();
+  if (!r) return null;
+  const x = (event.clientX - r.left) / r.width;
+  const y = (event.clientY - r.top) / r.height;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return { x, y };
+}
+
+function releaseAll() {
+  for (const code of heldKeys) send({ kind: 'key', code, down: false });
+  for (const button of heldButtons) send({ kind: 'button', button, down: false });
+  heldKeys.clear();
+  heldButtons.clear();
+}
+
+function setControl(on) {
+  controlOn = on;
+  $('control').checked = on;
+  if (on) $('screen').focus();
+  else releaseAll();
+}
+
+function scheduleMove(point) {
+  lastPoint = point;
+  if (moveFrame !== null) return;
+  moveFrame = requestAnimationFrame(() => {
+    moveFrame = null;
+    if (controlOn && lastPoint) send({ kind: 'move', ...lastPoint });
+  });
+}
+
+$('control').addEventListener('change', (e) => setControl(e.target.checked && mayControlNow));
+
+const screen = $('screen');
+screen.addEventListener('mousemove', (e) => {
+  const p = controlOn && toFraction(e);
+  if (p) scheduleMove(p);
+});
+screen.addEventListener('mousedown', (e) => {
+  const p = controlOn && toFraction(e);
+  if (!p) return;
+  e.preventDefault();
+  screen.focus();
+  const button = BUTTONS[e.button];
+  if (!button) return;
+  send({ kind: 'move', ...p });
+  send({ kind: 'button', button, down: true });
+  heldButtons.add(button);
+});
+window.addEventListener('mouseup', (e) => {
+  const button = BUTTONS[e.button];
+  if (controlOn && button && heldButtons.delete(button)) send({ kind: 'button', button, down: false });
+});
+screen.addEventListener('contextmenu', (e) => controlOn && e.preventDefault());
+screen.addEventListener(
+  'wheel',
+  (e) => {
+    if (!controlOn) return;
+    e.preventDefault();
+    const toLines = (d) => (d === 0 ? 0 : Math.sign(d) * (e.deltaMode === 1 ? Math.abs(d) : Math.max(1, Math.round(Math.abs(d) / 40))));
+    send({ kind: 'scroll', dx: toLines(e.deltaX), dy: toLines(e.deltaY) });
+  },
+  { passive: false },
+);
+screen.addEventListener('keydown', (e) => {
+  if (!controlOn) return;
+  e.preventDefault();
+  heldKeys.add(e.code);
+  send({ kind: 'key', code: e.code, down: true });
+});
+screen.addEventListener('keyup', (e) => {
+  if (!controlOn) return;
+  e.preventDefault();
+  heldKeys.delete(e.code);
+  send({ kind: 'key', code: e.code, down: false });
+});
+// Taking the keyboard back must not leave a key held down on the other computer.
+screen.addEventListener('blur', () => releaseAll());
+window.addEventListener('blur', () => releaseAll());
+
 $('show-screen').addEventListener('click', startVideo);
 $('stop-screen').addEventListener('click', () => stopVideo(''));
 
@@ -117,6 +227,9 @@ function showConnection(state) {
   const box = $('connection');
   box.hidden = !state.connected;
   mayViewNow = state.connected && state.permissions.includes('view');
+  mayControlNow = state.connected && state.permissions.includes('input');
+  $('control').disabled = !mayControlNow;
+  if (!mayControlNow && $('control').checked) setControl(false);
   if (!state.connected) {
     stopVideo();
     return;
@@ -128,6 +241,9 @@ function showConnection(state) {
     say('screen-msg', 'This device is not allowed to view the screen. Ask the host to grant it.');
   } else if (mayView && $('screen-msg').textContent.startsWith('This device is not allowed')) {
     say('screen-msg', '');
+  }
+  if (state.notices && state.notices.length > 0) {
+    say('screen-msg', `Host says: ${state.notices[state.notices.length - 1]}`);
   }
   $('conn-name').textContent = state.peer.name;
   $('conn-platform').textContent = state.peer.platform;
@@ -228,6 +344,7 @@ $('host-start').addEventListener('click', () =>
       bind: $('bind').value.trim(),
       pairing: $('pairing').checked,
       video: $('video').checked,
+      input: $('allow-input').checked,
       grant: chosenGrant(),
     });
     showHost(state);
