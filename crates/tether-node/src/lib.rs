@@ -59,6 +59,32 @@ pub fn pairing_link(address: String, code: String, name: Option<String>) -> Resu
         .to_string())
 }
 
+/// One display that can be shared.
+#[napi(object)]
+pub struct DisplayJs {
+    pub id: u32,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+}
+
+/// The displays this computer can share, primary first. Empty with no screen (a server).
+#[napi]
+pub fn list_displays() -> Result<Vec<DisplayJs>> {
+    Ok(tether_media::list_displays()
+        .map_err(err)?
+        .into_iter()
+        .map(|d| DisplayJs {
+            id: d.id,
+            name: d.name,
+            width: d.width,
+            height: d.height,
+            primary: d.primary,
+        })
+        .collect())
+}
+
 #[napi(object)]
 pub struct ParsedLink {
     pub address: String,
@@ -292,7 +318,7 @@ impl Device {
     }
 
     /// Starts accepting connections. Pass `pairing` to also show a one-time pairing code, and
-    /// `video` (currently only `"test-pattern"`) to let permitted devices watch a stream, and
+    /// `video` (`"test-pattern"`, `"screen"` or `"screen:<id>"`) to let permitted devices watch a stream, and
     /// `input` to let devices with the `input` permission control this computer's mouse and
     /// keyboard. Remote control is off unless the host turns it on here.
     #[napi]
@@ -316,12 +342,11 @@ impl Device {
         };
         let media: Option<Arc<dyn tether_core::media::MediaProvider>> = match video.as_deref() {
             None | Some("") | Some("none") => None,
-            Some("test-pattern") => {
-                Some(Arc::new(VideoHost::test_pattern(MediaOptions::default())))
-            }
-            Some(other) => {
-                return Err(err(format!(
-                    "unknown video source {other:?}; screen capture is not available yet"
+            Some(spec) => {
+                let spec: tether_media::VideoSpec = spec.parse().map_err(err)?;
+                Some(Arc::new(VideoHost::from_spec(
+                    spec,
+                    MediaOptions::default(),
                 )))
             }
         };

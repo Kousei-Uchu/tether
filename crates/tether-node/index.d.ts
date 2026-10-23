@@ -54,7 +54,7 @@ export class Device {
   remove(query: string): number;
   pair(address: string, code: string): Promise<PeerSummary>;
   connect(address: string): Promise<Connection>;
-  /** `video` lets permitted devices watch a stream. Only "test-pattern" exists so far. */
+  /** `video` lets permitted devices watch a stream: "test-pattern", "screen" or "screen:<id>" (see listDisplays). */
   /** `input: true` lets devices with the "input" permission control this computer. Off by default. */
   listen(
     bind: string,
@@ -87,3 +87,14 @@ export class HostHandle {
   drainEvents(): HostEvent[];
   stop(): void;
 }
+
+export interface Display {
+  id: number;
+  name: string;
+  width: number;
+  height: number;
+  primary: boolean;
+}
+
+/** The displays this computer can share, primary first. */
+export function listDisplays(): Display[];

@@ -4,10 +4,12 @@
 //! the implementation: given a client's WebRTC offer it answers and starts streaming frames
 //! from a [`FrameSource`].
 
+pub mod capture;
 pub mod encoder;
 pub mod host;
 pub mod source;
 
+pub use capture::{list_displays, DisplayInfo, ScreenSource};
 pub use encoder::H264Encoder;
-pub use host::{MediaOptions, VideoHost};
+pub use host::{MediaOptions, VideoHost, VideoSpec};
 pub use source::{read_counter, Frame, FrameSource, TestPattern};

@@ -35,7 +35,19 @@ async fn a_viewer_receives_rtp_and_the_guard_ends_the_session() {
         fps: 30,
         bitrate_kbps: 1000,
     });
+    stream_then_stop(host).await;
+}
 
+/// The same path with a real display as the source. Needs an X display, so run it with
+/// `xvfb-run -a cargo test -p tether-media --test loopback -- --include-ignored`.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "needs an X display, run with xvfb-run"]
+async fn a_real_screen_streams_to_a_viewer() {
+    stream_then_stop(VideoHost::screen(MediaOptions::default(), None)).await;
+}
+
+async fn stream_then_stop(host: VideoHost) {
     // Viewer side, built the way a browser behaves: it offers a receive-only video line.
     let mut media = MediaEngine::default();
     media.register_default_codecs().unwrap();

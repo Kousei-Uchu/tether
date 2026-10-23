@@ -37,6 +37,29 @@ async function loadIdentity() {
   const info = await window.tether.deviceInfo();
   $('device-name').textContent = info.name;
   $('device-fingerprint').textContent = info.fingerprint;
+  await loadDisplays();
+}
+
+// What this computer can share: each display, then the test pattern.
+async function loadDisplays() {
+  const select = $('video-source');
+  select.replaceChildren();
+  let displays = [];
+  try {
+    displays = await window.tether.listDisplays();
+  } catch {
+    // fall through with only the test pattern
+  }
+  for (const d of displays) {
+    const option = document.createElement('option');
+    option.value = `screen:${d.id}`;
+    option.textContent = `${d.name || 'Display'} (${d.width}\u00d7${d.height})${d.primary ? ', main' : ''}`;
+    select.append(option);
+  }
+  const test = document.createElement('option');
+  test.value = 'test-pattern';
+  test.textContent = 'Test pattern';
+  select.append(test);
 }
 
 // ----- watching the screen -----
@@ -374,7 +397,7 @@ $('host-start').addEventListener('click', () =>
     const state = await window.tether.startHost({
       bind: $('bind').value.trim(),
       pairing: $('pairing').checked,
-      video: $('video').checked,
+      video: $('video').checked ? $('video-source').value : null,
       input: $('allow-input').checked,
       grant: chosenGrant(),
     });

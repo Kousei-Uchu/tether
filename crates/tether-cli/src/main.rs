@@ -40,6 +40,8 @@ struct Cli {
 enum Cmd {
     /// Show this device's name, fingerprint and storage location.
     Id,
+    /// List the displays that can be shared with `listen --video screen:<id>`.
+    Displays,
     /// Accept connections from paired devices.
     Listen {
         #[arg(long, default_value = "0.0.0.0:7420")]
@@ -54,10 +56,10 @@ enum Cmd {
         /// power, files (comma separated), or `all`. Change it later with `peers grant`.
         #[arg(long, default_value = "view")]
         grant: PermissionSet,
-        /// Let devices with the view permission watch a stream. Only `test-pattern` exists so
-        /// far; screen capture comes in a later step.
-        #[arg(long, value_parser = ["test-pattern"])]
-        video: Option<String>,
+        /// Let devices with the view permission watch a stream: `screen` (the primary
+        /// display), `screen:<id>` (see `tether displays`) or `test-pattern`.
+        #[arg(long)]
+        video: Option<tether_media::VideoSpec>,
         /// Let devices that hold the input permission control this computer's mouse and
         /// keyboard. Off unless you pass this.
         #[arg(long)]
@@ -142,6 +144,7 @@ async fn run() -> Result<()> {
 
     match cli.cmd {
         Cmd::Id => show_id(&ctx),
+        Cmd::Displays => show_displays(),
         Cmd::Listen {
             bind,
             pair,
@@ -154,6 +157,24 @@ async fn run() -> Result<()> {
         Cmd::Connect { addr, pings } => connect_to(ctx, &addr, pings).await,
         Cmd::Peers { action } => peers(ctx, action),
     }
+}
+
+fn show_displays() -> Result<()> {
+    let displays = tether_media::list_displays().map_err(|e| anyhow::anyhow!(e))?;
+    if displays.is_empty() {
+        println!("no displays found");
+    }
+    for d in displays {
+        println!(
+            "{:<6} {}x{}  {}{}",
+            d.id,
+            d.width,
+            d.height,
+            d.name,
+            if d.primary { "  (primary)" } else { "" }
+        );
+    }
+    Ok(())
 }
 
 fn show_id(ctx: &Ctx) -> Result<()> {
@@ -220,7 +241,7 @@ async fn listen(
     pair: bool,
     ttl_secs: u64,
     grant: PermissionSet,
-    video: Option<String>,
+    video: Option<tether_media::VideoSpec>,
     input: bool,
 ) -> Result<()> {
     let trust = TrustStore::load(ctx.paths.trust_file())?;
@@ -242,8 +263,9 @@ async fn listen(
         trust: Arc::new(Mutex::new(trust)),
         pairing,
         device_name: ctx.name,
-        media: video.map(|_| {
-            Arc::new(tether_media::VideoHost::test_pattern(
+        media: video.map(|spec| {
+            Arc::new(tether_media::VideoHost::from_spec(
+                spec,
                 tether_media::MediaOptions::default(),
             )) as Arc<dyn tether_core::media::MediaProvider>
         }),

@@ -75,6 +75,8 @@ takes control away at once, and releases any key that was held down.
 
 Platform notes for the host:
 
+- macOS also asks for Screen Recording the first time a viewer connects. Allow it under System Settings, Privacy & Security, Screen Recording, then restart Tether.
+- Large displays are scaled down to fit 1920×1080 before encoding, because the software encoder cannot keep up with more.
 - macOS asks for Accessibility access the first time. Allow it under System Settings, Privacy
   & Security, Accessibility, for Tether (or Electron while developing), then try again.
 - Windows cannot reach elevated windows, the UAC prompt or the lock screen unless Tether runs
@@ -93,7 +95,7 @@ Checks that need no display on Windows and macOS, and `xvfb-run -a` on Linux:
 npm run smoke      # the window opens and shows this device's identity
 npm run e2e        # drives the real UI through pair, connect, video, live grant and revoke
 cd ../../crates/tether-node && npm test   # the bridge on its own, no Electron
-xvfb-run -a cargo test -p tether-input -- --include-ignored   # injects into a real X display (Linux)
+xvfb-run -a cargo test -p tether-input -p tether-media -- --include-ignored   # real X display: input injection, screen capture (Linux)
 scripts/ffi-check.sh                    # the phone's Rust interface, driven from Python against a real host
 ```
 

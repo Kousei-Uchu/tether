@@ -75,7 +75,7 @@ fn msg(e: impl Display) -> String {
 pub struct MediaOptions {
     pub fps: u32,
     pub bitrate_kbps: u32,
-    /// Only used by the test pattern.
+    /// Only used by the test pattern; screen capture sizes itself.
     pub width: usize,
     pub height: usize,
 }
@@ -87,6 +87,37 @@ impl Default for MediaOptions {
             bitrate_kbps: 2000,
             width: 960,
             height: 540,
+        }
+    }
+}
+
+/// Which picture source to stream, as typed on the command line or chosen in the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoSpec {
+    TestPattern,
+    /// A display id from [`crate::list_displays`], or the primary display.
+    Screen(Option<u32>),
+}
+
+impl std::str::FromStr for VideoSpec {
+    type Err = String;
+
+    /// `test-pattern`, `screen` (the primary display) or `screen:<id>`.
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "test-pattern" => Ok(Self::TestPattern),
+            "screen" => Ok(Self::Screen(None)),
+            other => match other.strip_prefix("screen:") {
+                Some(id) => id
+                    .parse::<u32>()
+                    .map(|id| Self::Screen(Some(id)))
+                    .map_err(|_| {
+                        format!("bad display id {id:?}; run `tether displays` to list them")
+                    }),
+                None => Err(format!(
+                    "unknown video source {other:?}; use test-pattern, screen or screen:<id>"
+                )),
+            },
         }
     }
 }
@@ -104,6 +135,26 @@ impl VideoHost {
     pub fn test_pattern(opts: MediaOptions) -> Self {
         let (w, h) = (opts.width, opts.height);
         Self::with_source(opts, move || Ok(Box::new(TestPattern::new(w, h)?)))
+    }
+
+    /// Streams whatever `spec` names.
+    pub fn from_spec(spec: VideoSpec, opts: MediaOptions) -> Self {
+        match spec {
+            VideoSpec::TestPattern => Self::test_pattern(opts),
+            VideoSpec::Screen(display) => Self::screen(opts, display),
+        }
+    }
+
+    /// Streams a real display (an id from [`crate::list_displays`], or `None` for the
+    /// primary one). The source is opened per viewer, so a bad choice is reported when
+    /// someone tries to watch.
+    pub fn screen(opts: MediaOptions, display: Option<u32>) -> Self {
+        Self::with_source(opts, move || {
+            Ok(Box::new(crate::capture::ScreenSource::new(
+                display,
+                crate::capture::DEFAULT_MAX_SIZE,
+            )?))
+        })
     }
 
     /// Streams any source. `make_source` runs once per viewer.
@@ -365,4 +416,18 @@ fn start_pump(
         }
         stop.store(true, Ordering::SeqCst);
     });
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use super::VideoSpec;
+
+    #[test]
+    fn parses_video_specs() {
+        assert_eq!("test-pattern".parse(), Ok(VideoSpec::TestPattern));
+        assert_eq!("screen".parse(), Ok(VideoSpec::Screen(None)));
+        assert_eq!("screen:7".parse(), Ok(VideoSpec::Screen(Some(7))));
+        assert!("screen:x".parse::<VideoSpec>().is_err());
+        assert!("webcam".parse::<VideoSpec>().is_err());
+    }
 }

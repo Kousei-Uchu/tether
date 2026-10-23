@@ -9,10 +9,19 @@ const fs = require('node:fs');
 const bridgePath = fs.existsSync(path.join(__dirname, 'native', 'tether.node'))
   ? './native'
   : '../../crates/tether-node';
-const { Device, pairingLink, parsePairingLink } = require(bridgePath);
+const { Device, pairingLink, parsePairingLink, listDisplays } = require(bridgePath);
 
 const smoke = process.argv.includes('--smoke');
 const PERMISSIONS = ['view', 'input', 'media', 'power', 'files'];
+
+// What the host may stream: nothing, the test pattern, or a display ("screen" or "screen:<id>").
+function videoSource(value) {
+  if (!value) return null;
+  if (value === true) return 'test-pattern';
+  const text = String(value);
+  if (!/^(test-pattern|screen(:\d+)?)$/.test(text)) throw new Error('Unknown video source.');
+  return text;
+}
 
 // Chromium hides local addresses behind mDNS names by default. Tether peers are your own
 // machines on a LAN or Tailscale, and the host cannot resolve those names, so turn it off.
@@ -146,10 +155,17 @@ function registerIpc() {
     return connection.requestVideo(String(offer));
   });
 
+  handle('displays:list', () => {
+    try {
+      return listDisplays();
+    } catch {
+      return []; // no screen to share, for example a machine with no display attached
+    }
+  });
   handle('host:start', async ({ bind, pairing, grant, video, input }) => {
     if (host) throw new Error('Already accepting connections.');
     const options = pairing ? { grant: validPermissions(grant ?? ['view']) } : null;
-    host = await device.listen(String(bind), options, video ? 'test-pattern' : null, Boolean(input));
+    host = await device.listen(String(bind), options, videoSource(video), Boolean(input));
     hostLog = [];
     hostLinks = await buildLinks();
     return hostState();

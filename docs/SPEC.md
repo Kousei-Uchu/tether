@@ -280,9 +280,11 @@ when the host revokes `view`. Met with the test pattern.
 
 ### M3c. Screen capture sources
 
+- [x] Software capture through `xcap` (Windows, macOS, Linux), scaled to at most 1080p, software H.264. Verified on Linux X11 only
 - [ ] Windows capture (Windows Graphics Capture or DXGI), hardware encode (Media Foundation, NVENC)
 - [ ] macOS capture (ScreenCaptureKit), hardware encode (VideoToolbox)
-- [ ] Choose the display, one video track per display
+- [x] Choose the display (`tether displays`, `--video screen:<id>`, dropdown in the app)
+- [ ] One video track per display
 - [ ] Host agent as a background service skeleton (Windows service, macOS launch agent)
 
 Acceptance: the Mac sees the PC's screen and the PC sees the Mac's, at 30 fps on a LAN.
@@ -384,6 +386,7 @@ phone, with controls following permission changes live.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-23 | M3c started: software screen capture and display choice (Linux verified). Packaging scripts and release workflow for all platforms |
 | 2026-10-19 | M1 complete: protocol, identity, pairing, secure channel, CLI, tests, CI |
 | 2026-10-22 | M5 started: UniFFI crate, pairing links and QR on the desktop host, SwiftUI iPhone app (not yet compiled), iOS build script and CI jobs |
 | 2026-10-21 | M3d complete: mouse and keyboard control, host switch, notices, release on revoke. Protocol version 4. Build order from here: iPhone app (M5), then screen capture Mac to PC, then PC to Mac (M3c) |
