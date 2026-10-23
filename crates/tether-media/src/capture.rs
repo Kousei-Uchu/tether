@@ -78,9 +78,18 @@ fn convert(rgba: &[u8], from: (usize, usize), to: (usize, usize)) -> Vec<u8> {
 /// Captures one display. The size is fixed when the source is created; if the display
 /// changes resolution mid stream, pictures are fitted to the original size.
 pub struct ScreenSource {
-    monitor: Monitor,
+    monitor: SendMonitor,
     size: (usize, usize),
 }
+
+/// `xcap::Monitor` holds an `HMONITOR` on Windows, which is a raw pointer and so not
+/// `Send`. It is an opaque, process-wide display handle that is safe to use from any
+/// thread. `ScreenSource` is built on one thread and then moved to the capture thread,
+/// which is its only user, so it is never used from two threads at once.
+struct SendMonitor(Monitor);
+
+// SAFETY: see above. Only `Send` is asserted, not `Sync`.
+unsafe impl Send for SendMonitor {}
 
 impl ScreenSource {
     /// `display` is an id from [`list_displays`]; `None` means the primary display.
@@ -111,7 +120,7 @@ impl ScreenSource {
         let probe = chosen.capture_image().map_err(capture_error)?;
         let size = target_size((probe.width() as usize, probe.height() as usize), max);
         Ok(Self {
-            monitor: chosen,
+            monitor: SendMonitor(chosen),
             size,
         })
     }
@@ -132,7 +141,7 @@ impl FrameSource for ScreenSource {
     }
 
     fn next_frame(&mut self) -> Result<Frame, String> {
-        let img = self.monitor.capture_image().map_err(capture_error)?;
+        let img = self.monitor.0.capture_image().map_err(capture_error)?;
         let from = (img.width() as usize, img.height() as usize);
         Ok(Frame {
             width: self.size.0,
