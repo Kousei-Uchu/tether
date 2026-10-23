@@ -63,6 +63,15 @@
             </div>
             <p id="screen-msg" class="msg" role="status"></p>
             <video id="screen" autoplay muted playsinline tabindex="0" hidden></video>
+            <div id="media-row" class="row actions start" hidden>
+              <button data-key="MediaTrackPrevious" aria-label="Previous track" title="Previous track">&#9198;</button>
+              <button data-key="MediaPlayPause" aria-label="Play or pause" title="Play or pause">&#9199;</button>
+              <button data-key="MediaTrackNext" aria-label="Next track" title="Next track">&#9197;</button>
+              <button data-key="AudioVolumeMute" aria-label="Mute" title="Mute">&#128263;</button>
+              <button data-key="AudioVolumeDown" aria-label="Volume down" title="Volume down">&#128265;</button>
+              <button data-key="AudioVolumeUp" aria-label="Volume up" title="Volume up">&#128266;</button>
+            </div>
+            <p id="media-msg" class="hint" hidden>Media keys act on the other computer when it has remote control turned on.</p>
             <div id="control-row" hidden>
               <label class="check">
                 <input id="control" type="checkbox" />

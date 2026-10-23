@@ -135,6 +135,11 @@ async function run() {
   await waitFor(win, `window.__seen.keys.includes('KeyQ')`, 'the key press to arrive', 8000);
   console.log('input ok: key arrived');
 
+  // The media row presses real media keys on the host.
+  await js(`document.querySelector('#media-row button[data-key="AudioVolumeUp"]').click()`);
+  await waitFor(win, `window.__seen.keys.includes('AudioVolumeUp')`, 'the volume key to arrive', 8000);
+  console.log('input ok: media key arrived');
+
   // Taking the input permission away disables the control box in the window.
   hostDev.revoke(hostDev.peers()[0].fingerprint, ['input']);
   await waitFor(win, `document.getElementById('control').disabled && !document.getElementById('control').checked`, 'control to switch off after revoke', 8000);

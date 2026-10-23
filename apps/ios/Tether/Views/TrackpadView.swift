@@ -6,7 +6,10 @@ import UIKit
 ///   tap                  left click
 ///   two finger tap       right click
 ///   two finger drag      scrolls
-///   tap, then hold+drag  drags (press stays down until you lift)
+///   tap, then touch again and drag   click and drag (the press stays down until you lift)
+///
+/// A plain drag never presses the button, however long it lasts. Only a tap followed at
+/// once by a second touch that stays down starts a drag, as on a laptop trackpad.
 struct TrackpadView: UIViewRepresentable {
     @EnvironmentObject var model: AppModel
 
@@ -33,7 +36,10 @@ struct TrackpadView: UIViewRepresentable {
         twoFingerTap.numberOfTouchesRequired = 2
 
         let hold = UILongPressGestureRecognizer(target: c, action: #selector(Coordinator.hold(_:)))
-        hold.minimumPressDuration = 0.35
+        // One tap first, then a touch that stays down. Without the tap requirement every
+        // drag longer than the press time turned into a click and drag.
+        hold.numberOfTapsRequired = 1
+        hold.minimumPressDuration = 0.12
         hold.allowableMovement = 10_000
         hold.numberOfTouchesRequired = 1
 

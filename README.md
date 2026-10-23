@@ -143,6 +143,10 @@ To serve the test video from the terminal too, add `--video test-pattern` to `li
 
 Set `RUST_LOG=debug` for more detail.
 
+## Media keys
+
+A device with the `media` permission gets a row of play, pause, track and volume buttons in the desktop app and on the iPhone. They press the real media keys on the other computer, so the host needs remote control turned on (`--input` or the checkbox), and the key presses go to whatever app that computer sends them to.
+
 ## Waking a sleeping computer
 
 Magic packets do not cross the internet, so something that stays on, on the same network as the computer, has to send them. Any Tether host can do it. On a Raspberry Pi:

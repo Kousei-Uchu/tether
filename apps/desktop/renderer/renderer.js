@@ -191,6 +191,16 @@ function scheduleMove(point) {
   });
 }
 
+// Media and volume keys press the real keys on the other computer. They need the media
+// permission there, and remote control turned on at that end.
+for (const button of $('media-row').querySelectorAll('button[data-key]')) {
+  button.addEventListener('click', () => {
+    const code = button.dataset.key;
+    send({ kind: 'key', code, down: true });
+    send({ kind: 'key', code, down: false });
+  });
+}
+
 $('control').addEventListener('change', (e) => setControl(e.target.checked && mayControlNow));
 
 const screen = $('screen');
@@ -251,6 +261,9 @@ function showConnection(state) {
   box.hidden = !state.connected;
   mayViewNow = state.connected && state.permissions.includes('view');
   mayControlNow = state.connected && state.permissions.includes('input');
+  const mayMedia = state.connected && state.permissions.includes('media');
+  $('media-row').hidden = !mayMedia;
+  $('media-msg').hidden = !mayMedia;
   $('control').disabled = !mayControlNow;
   if (!mayControlNow && $('control').checked) setControl(false);
   if (!state.connected) {
