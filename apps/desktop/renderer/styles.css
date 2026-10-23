@@ -93,6 +93,11 @@ fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 10px 0; }
 legend { padding: 0 6px; color: var(--muted); font-size: 12px; }
 .code-block { margin: 10px 0; padding: 12px; border: 1px dashed var(--line); border-radius: 8px; }
 .big-code { font-size: 24px; letter-spacing: 0.08em; user-select: all; }
+.qr-row { display: flex; gap: 16px; margin-top: 12px; align-items: flex-start; }
+.qr-row img { background: #fff; border-radius: 6px; flex: none; }
+.qr-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.qr-side select { font: inherit; padding: 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+code.link { display: block; word-break: break-all; user-select: all; }
 .log { list-style: none; margin: 8px 0 0; padding: 0; max-height: 160px; overflow: auto; }
 .log li { padding: 2px 0; color: var(--muted); }
 table { width: 100%; border-collapse: collapse; }

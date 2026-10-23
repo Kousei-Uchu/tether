@@ -7,6 +7,7 @@ members = [
     "crates/tether-node",
     "crates/tether-media",
     "crates/tether-input",
+    "crates/tether-ffi",
 ]
 
 [workspace.package]
@@ -20,6 +21,7 @@ tether-proto = { path = "crates/tether-proto" }
 tether-core = { path = "crates/tether-core" }
 tether-media = { path = "crates/tether-media" }
 tether-input = { path = "crates/tether-input" }
+tether-ffi = { path = "crates/tether-ffi" }
 anyhow = "1"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
@@ -39,6 +41,7 @@ tempfile = "3"
 thiserror = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
 tracing = "0.1"
+uniffi = { version = "0.32", features = ["tokio"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 webrtc = "0.14"
 

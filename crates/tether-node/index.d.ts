@@ -27,6 +27,17 @@ export type InputEvent =
   | { kind: 'key'; code: string; down: boolean }
   | { kind: 'text'; text: string };
 
+export interface ParsedLink {
+  address: string;
+  code: string;
+  name?: string;
+}
+
+/** The link a host shows as a QR code: tether://pair?addr=...&code=...&name=... */
+export function pairingLink(address: string, code: string, name?: string | null): string;
+/** Reads a pairing link. Throws a readable error if it is not one. */
+export function parsePairingLink(link: string): ParsedLink;
+
 export type PermissionName = 'view' | 'input' | 'media' | 'power' | 'files';
 
 /** This machine's identity and trust store. */

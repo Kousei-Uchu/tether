@@ -1,0 +1,25 @@
+[package]
+name = "tether-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "tether_ffi"
+crate-type = ["cdylib", "staticlib", "lib"]
+
+# The binding generator is a build tool, not part of the library that ships in the app.
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+tether-core.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uniffi.workspace = true

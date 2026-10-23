@@ -163,3 +163,16 @@ test('input events are validated, gated, and refusals come back as notices', asy
     rmSync(client.home, { recursive: true, force: true });
   }
 });
+
+test('pairing links round trip and bad ones are explained', () => {
+  const { pairingLink, parsePairingLink } = createRequire(import.meta.url)('../index.js');
+  const link = pairingLink('192.168.1.20:7420', 'abcd efgh jklm np0o', "Sorren's PC");
+  assert.match(link, /^tether:\/\/pair\?addr=192\.168\.1\.20%3A7420&code=ABCD-EFGH-JK1M-NP00&name=Sorren/);
+  assert.deepEqual(parsePairingLink(link), {
+    address: '192.168.1.20:7420',
+    code: 'ABCD-EFGH-JK1M-NP00',
+    name: "Sorren's PC",
+  });
+  assert.throws(() => parsePairingLink('https://example.com'), /not a Tether pairing link/);
+  assert.throws(() => pairingLink('host', 'short'), /not valid/);
+});

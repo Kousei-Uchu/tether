@@ -6,7 +6,7 @@ the same commit as the code it describes.
 
 | Field | Value |
 | --- | --- |
-| Status | Milestone 2 of 8 complete, milestone 3 in progress (3a, 3b and 3d done) |
+| Status | Milestone 2 of 8 complete, milestone 3 in progress (3a, 3b and 3d done), milestone 5 started (iPhone app written, not yet compiled) |
 | Protocol version | 4 |
 | Targets | Windows 10+, macOS 13+, iOS 17+ |
 | Core language | Rust (agent, protocol, crypto), SwiftUI (iPhone), Electron (desktop UI) |
@@ -50,7 +50,7 @@ Legend: `[x]` done, `[~]` in progress, `[ ]` not started.
 | R-3 | Remote view of one display, PC to Mac and Mac to PC | M3 | [ ] |
 | R-4 | Mouse and keyboard injection on both OSes | M3d | [~] Built and verified against X11. Windows and macOS use the same code through `enigo` and are not yet run |
 | R-5 | System audio streaming, both directions | M4 | [ ] |
-| R-6 | iPhone trackpad, keyboard and media controller | M5 | [ ] |
+| R-6 | iPhone trackpad, keyboard and media controller | M5 | [~] Written. The Rust interface it uses is tested. The Swift has not been compiled |
 | R-7 | Wake from sleep through an always-on LAN relay | M6 | [ ] |
 | R-8 | One window per remote display, with snapping and saved layout | M7 | [ ] |
 | R-9 | Cursor flows across screen edges between machines | M7 | [ ] |
@@ -72,6 +72,8 @@ Legend: `[x]` done, `[~]` in progress, `[ ]` not started.
 | `tether-proto` | Wire types, shared by every component | Rust crate, ported to Swift later |
 | `tether-core` | Identity, trust store, pairing, secure channel | Rust crate |
 | `tether-media` | Host side video: frame sources, H.264 encoder, WebRTC session | Rust crate (webrtc-rs, OpenH264) |
+| `tether-ffi` | The client side of the core for Swift, through UniFFI: pair, connect, ping, input, notices, pairing links | Rust cdylib and staticlib |
+| iPhone app | Controller: trackpad, keyboard, media keys, QR pairing | SwiftUI, in `apps/ios` |
 | `tether-input` | Host side mouse and keyboard injection, one thread per controlling device | Rust crate (enigo) |
 | `tether-node` | Exposes `tether-core` to JavaScript: pair, connect, host, permissions | Rust cdylib using napi-rs, loaded by Electron |
 
@@ -310,12 +312,20 @@ until M3c.
 - [ ] Opus track both ways, feedback loop prevention
 - [ ] Optional virtual device routing
 
-### M5. iPhone controller
+### M5. iPhone controller (written, awaiting the first Xcode build)
 
-- [ ] SwiftUI app, Swift port of `tether-proto`, Noise implementation
-- [ ] QR code pairing
-- [ ] Touch trackpad, keyboard, media panel, controls disabled when the grant lacks them
-- [ ] Shortcuts integration
+- [x] Swift API for the Rust core through UniFFI (no Swift port of the protocol or the Noise handshake; D-19)
+- [x] Interface tested from Python against a real host: pairing, wrong and reused codes, permissions, input refusal notices, live grant, revoke, errors (`scripts/ffi-check.sh`)
+- [x] Pairing link format (`tether://pair?addr=...&code=...&name=...`), parsed and built in Rust, with tests
+- [x] Desktop host shows a QR code of the link, one per reachable address; a pasted link fills the pairing fields. A test decodes the QR from the screen
+- [x] `scripts/build-ios.sh` builds the xcframework and generated Swift; XcodeGen project definition
+- [~] SwiftUI app: paired computers, QR scan and typed pairing, trackpad, keyboard, modifier keys, media keys, controls disabled when the grant lacks them, notices. Written, not compiled
+- [ ] First successful Xcode build and run on a phone (needs you)
+- [ ] Hardware keyboard forwarding, Shortcuts integration, Siri triggers
+- [ ] Viewing the screen on the phone (after M3c)
+
+Acceptance: scan the QR code on a computer, then move its pointer and type on it from the
+phone, with controls following permission changes live.
 
 ### M6. Wake relay
 
@@ -354,10 +364,13 @@ until M3c.
 | D-12 | Video: H.264 over WebRTC, host in Rust (webrtc-rs 0.14), viewer is Chromium | Chromium decodes H.264 with hardware help and has a full WebRTC stack. The host offers H.264 only so negotiation is deterministic | Accepted |
 | D-13 | The host's sending transceiver is created before the viewer's offer is applied | In webrtc-rs 0.14, `add_track` after the offer makes a second, unnegotiated transceiver and the viewer never learns about the stream. Found by the loopback test | Accepted |
 | D-14 | Electron disables mDNS hiding of local IPs in WebRTC | The host cannot resolve `.local` names. Peers are the user's own machines on a LAN or Tailscale | Accepted |
+| D-15 | The host re-checks permissions on a timer, not only on incoming messages | A viewer that goes quiet must not keep a revoked permission. Reading moved to its own task because a half-read frame cannot be cancelled | Accepted |
 | D-16 | Remote control has its own host switch, separate from the `input` permission | Moving a real mouse is the most dangerous thing in the app. A paired device with `input` still does nothing unless the host opted in | Accepted |
 | D-17 | Pointer position is a fraction of the display, not pixels | The two screens differ in size, shape and scaling. The host converts to its own pixels | Accepted |
 | D-18 | One injector thread per device, owning what is held down | The OS handle is not `Send` everywhere, calls can block, and the thread is the one place that can release stuck keys | Accepted |
-| D-15 | The host re-checks permissions on a timer, not only on incoming messages | A viewer that goes quiet must not keep a revoked permission. Reading moved to its own task because a half-read frame cannot be cancelled | Accepted |
+| D-19 | The iPhone uses the Rust core through UniFFI instead of a Swift reimplementation | One implementation of the protocol, handshake and trust rules. Swift only does UI. The interface is testable from Python without Xcode | Accepted |
+| D-20 | Pairing link carries address, code and an optional name, and no extra trust | The code is what authenticates pairing. The link only saves typing, so a tampered link can only fail to pair | Accepted |
+| D-21 | The phone is a controller only for now, and disconnects when backgrounded | iOS suspends sockets in the background, so a clean disconnect beats a dead session. Viewing needs screen capture first | Accepted |
 
 ## 8. Open questions
 
@@ -372,6 +385,7 @@ until M3c.
 | Date | Change |
 | --- | --- |
 | 2026-10-19 | M1 complete: protocol, identity, pairing, secure channel, CLI, tests, CI |
+| 2026-10-22 | M5 started: UniFFI crate, pairing links and QR on the desktop host, SwiftUI iPhone app (not yet compiled), iOS build script and CI jobs |
 | 2026-10-21 | M3d complete: mouse and keyboard control, host switch, notices, release on revoke. Protocol version 4. Build order from here: iPhone app (M5), then screen capture Mac to PC, then PC to Mac (M3c) |
 | 2026-10-20 | M3b complete: H.264 over WebRTC, permission gated and timer enforced, Electron viewer. Source is a test pattern. Screen capture and input are M3c and M3d. Protocol version 3 |
 | 2026-10-20 | M3a complete: `tether-node` bridge and the Electron desktop app (pair, connect, host, permissions) |

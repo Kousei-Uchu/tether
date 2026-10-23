@@ -30,3 +30,29 @@ jobs:
       - name: Node bridge tests
         working-directory: crates/tether-node
         run: npm test
+
+  # Best effort: the iPhone app was written without Xcode, so this job reports problems early.
+  # It does not block the rest.
+  ios:
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: brew install xcodegen
+      - run: scripts/build-ios.sh
+      - name: Build the app for the simulator
+        working-directory: apps/ios
+        run: |
+          xcodegen
+          xcodebuild -project Tether.xcodeproj -scheme Tether -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+
+  ffi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Interface check from Python against a real host
+        run: scripts/ffi-check.sh

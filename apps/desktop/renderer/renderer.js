@@ -329,10 +329,41 @@ function showHost(state) {
   $('host-address').textContent = state.address;
   $('code-block').hidden = !state.code;
   $('host-code').textContent = state.code ?? '';
+  showQr(state.links ?? []);
   $('host-log').replaceChildren(
     ...state.log.slice().reverse().map((e) => el('li', { textContent: e.message })),
   );
 }
+
+// The QR code shows one address at a time. If this computer has several (Wi-Fi, Ethernet,
+// Tailscale) the person picks the one the phone can reach.
+let shownLinks = '';
+function showQr(links) {
+  if (links.length === 0) return;
+  const signature = links.map((l) => l.address).join('|');
+  const select = $('qr-address');
+  if (signature !== shownLinks) {
+    shownLinks = signature;
+    select.replaceChildren(...links.map((l, i) => el('option', { value: String(i), textContent: l.address })));
+    $('qr-address-row').hidden = links.length < 2;
+  }
+  const chosen = links[Number(select.value) || 0];
+  $('host-qr').src = chosen.svgDataUrl;
+  $('host-link').textContent = chosen.link;
+}
+$('qr-address').addEventListener('change', () => pollHostNow());
+
+// Pasting a pairing link into the code box fills in both fields.
+$('code').addEventListener('input', async (e) => {
+  const text = e.target.value.trim();
+  if (!text.startsWith('tether://')) return;
+  await guarded('connect-msg', async () => {
+    const link = await window.tether.parseLink(text);
+    $('address').value = link.address;
+    $('code').value = link.code;
+    say('connect-msg', link.name ? `Link from ${link.name} read. Press Pair.` : 'Link read. Press Pair.');
+  });
+});
 
 $('pairing').addEventListener('change', (e) => {
   $('grant-set').disabled = !e.target.checked;
@@ -395,6 +426,13 @@ async function renderPeers() {
 }
 
 // Keep the host activity and the peer list fresh while the window is open.
+async function pollHostNow() {
+  try {
+    const host = await window.tether.pollHost();
+    if (host.running) showHost(host);
+  } catch { /* the next tick will try again */ }
+}
+
 setInterval(async () => {
   try {
     const host = await window.tether.pollHost();

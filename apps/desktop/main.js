@@ -1,7 +1,9 @@
 // Electron main process. Owns the Rust bridge; the renderer never touches it directly.
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('node:path');
-const { Device } = require('../../crates/tether-node');
+const os = require('node:os');
+const QRCode = require('qrcode');
+const { Device, pairingLink, parsePairingLink } = require('../../crates/tether-node');
 
 const smoke = process.argv.includes('--smoke');
 const PERMISSIONS = ['view', 'input', 'media', 'power', 'files'];
@@ -15,6 +17,7 @@ let win = null;
 let connection = null;
 let host = null;
 let hostLog = [];
+let hostLinks = [];
 
 // Mouse and keyboard events go to the host in order. Pointer moves are replaceable, so only
 // the latest waiting one is kept; everything else keeps its place in line.
@@ -105,6 +108,7 @@ function registerIpc() {
   handle('peers:revoke', (query, perms) => device.revoke(String(query), validPermissions(perms)));
   handle('peers:remove', (query) => device.remove(String(query)));
 
+  handle('link:parse', (text) => parsePairingLink(String(text)));
   handle('pair', (address, code) => device.pair(String(address), String(code)));
 
   handle('connect', async (address) => {
@@ -141,11 +145,13 @@ function registerIpc() {
     const options = pairing ? { grant: validPermissions(grant ?? ['view']) } : null;
     host = await device.listen(String(bind), options, video ? 'test-pattern' : null, Boolean(input));
     hostLog = [];
+    hostLinks = await buildLinks();
     return hostState();
   });
   handle('host:stop', () => {
     if (host) host.stop();
     host = null;
+    hostLinks = [];
     logHost('info', 'Stopped accepting connections');
     return hostState();
   });
@@ -155,11 +161,42 @@ function registerIpc() {
   });
 }
 
+// Addresses another device could use to reach this one, most likely first: private LAN
+// ranges, then Tailscale, then anything else.
+function reachableAddresses(port) {
+  const rank = (ip) => (/^(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))/.test(ip) ? 0 : ip.startsWith('100.') ? 1 : 2);
+  const ips = Object.values(os.networkInterfaces())
+    .flat()
+    .filter((i) => i && (i.family === 'IPv4' || i.family === 4) && !i.internal)
+    .map((i) => i.address)
+    .sort((a, b) => rank(a) - rank(b));
+  return ips.map((ip) => `${ip}:${port}`);
+}
+
+// One QR code per address this host can be reached at. Scanning one pairs a phone without
+// typing the address or the code.
+async function buildLinks() {
+  const [bindHost, port] = [host.address.slice(0, host.address.lastIndexOf(':')), host.address.split(':').pop()];
+  const wildcard = bindHost === '0.0.0.0' || bindHost === '[::]' || bindHost === '::';
+  let addresses = wildcard ? reachableAddresses(port) : [host.address];
+  if (addresses.length === 0) addresses = [host.address];
+  const code = host.pairingCode;
+  if (!code) return [];
+  return Promise.all(
+    addresses.map(async (address) => {
+      const link = pairingLink(address, code, device.name);
+      const svg = await QRCode.toString(link, { type: 'svg', margin: 1, width: 240, errorCorrectionLevel: 'M' });
+      return { address, link, svgDataUrl: `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}` };
+    }),
+  );
+}
+
 function hostState() {
   return {
     running: host !== null,
     address: host ? host.address : null,
     code: host ? host.pairingCode : null,
+    links: hostLinks,
     log: hostLog,
   };
 }

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self'"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tether</title>
@@ -32,7 +32,7 @@
           </label>
           <label class="grow">
             Pairing code
-            <input id="code" type="text" placeholder="XXXX-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" />
+            <input id="code" type="text" placeholder="XXXX-XXXX-XXXX-XXXX, or paste a pairing link" spellcheck="false" autocomplete="off" />
           </label>
         </div>
         <div class="row actions">
@@ -111,6 +111,17 @@
           <div id="code-block" class="code-block" hidden>
             <div class="muted small">Pairing code, single use</div>
             <div id="host-code" class="big-code"></div>
+            <div class="qr-row">
+              <img id="host-qr" alt="QR code that pairs a phone with this computer" width="180" height="180" />
+              <div class="qr-side">
+                <p class="hint">Scan this with the Tether app on your phone, or paste the link below into another computer's pairing code box.</p>
+                <label id="qr-address-row" class="grow" hidden>
+                  Address in the QR code
+                  <select id="qr-address"></select>
+                </label>
+                <code id="host-link" class="link"></code>
+              </div>
+            </div>
           </div>
           <div class="row actions">
             <button id="host-stop">Stop</button>

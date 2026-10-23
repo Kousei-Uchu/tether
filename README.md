@@ -2,10 +2,12 @@
 
 Remote desktop and device control between Windows, macOS and iPhone, built from scratch.
 
-This repository is at **step 3 of 8**: a shared protocol, one-time-code pairing, an
+This repository is at **step 3 of 8, with the iPhone app started**: a shared protocol, one-time-code pairing, an
 encrypted, mutually authenticated connection between two machines, per-device permissions,
 an Electron desktop app, live video over WebRTC, and remote mouse and keyboard control. The
 video source is a **test pattern** for now; capturing a real screen comes after the iPhone app.
+The iPhone app (a trackpad, keyboard and media controller that pairs by scanning a QR code) is
+written but has not been compiled yet; see [apps/ios/README.md](apps/ios/README.md).
 The full plan, requirements and progress live in [docs/SPEC.md](docs/SPEC.md).
 
 ## Layout
@@ -17,9 +19,11 @@ crates/
   tether-cli     the `tether` command, a terminal front end for the same features
   tether-media   host side video: frame sources, H.264 encoder, WebRTC
   tether-input   host side mouse and keyboard injection (enigo)
+  tether-ffi     the client side of the core for Swift, through UniFFI
   tether-node    Node and Electron bridge to tether-core (napi-rs)
 apps/
   desktop        the Electron app
+  ios            the iPhone app (SwiftUI), see apps/ios/README.md
 docs/SPEC.md     specification, security model, milestones, decision log
 ```
 
@@ -58,6 +62,10 @@ allowed to do.
 To see video: on the host, leave "Share a test video" ticked and start accepting
 connections. On the other device, connect and press **Show screen**. The button is disabled
 unless the host has granted `view`, and the video stops the moment `view` is revoked.
+To pair a phone, leave pairing on when starting to accept connections: the window shows a QR
+code for each address the computer can be reached at (pick the one the phone can reach if
+there are several). The same link can be pasted into another computer's pairing code box.
+
 To control the host: it must opt in, because this moves its real mouse. Tick **Allow remote
 control** when starting it (or pass `--input` to `tether listen`), and give the device the
 `input` permission. On the other device, tick **Control this computer** under the video, move
@@ -86,6 +94,7 @@ npm run smoke      # the window opens and shows this device's identity
 npm run e2e        # drives the real UI through pair, connect, video, live grant and revoke
 cd ../../crates/tether-node && npm test   # the bridge on its own, no Electron
 xvfb-run -a cargo test -p tether-input -- --include-ignored   # injects into a real X display (Linux)
+scripts/ffi-check.sh                    # the phone's Rust interface, driven from Python against a real host
 ```
 
 On Linux as root (containers) Electron also needs `--no-sandbox`.

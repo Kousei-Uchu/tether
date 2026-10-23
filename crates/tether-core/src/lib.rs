@@ -3,6 +3,7 @@
 pub mod channel;
 pub mod identity;
 pub mod input;
+pub mod link;
 pub mod media;
 pub mod pairing;
 pub mod paths;

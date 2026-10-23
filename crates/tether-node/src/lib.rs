@@ -18,10 +18,11 @@ use std::{
 };
 use tether_core::{
     identity::Identity,
+    link::{with_default_port, PairingLink},
     pairing::PairingOffer,
     paths::{default_device_name, Paths},
     permissions::PermissionSet,
-    proto::{InputEvent, Key, MouseButton, Permission, DEFAULT_PORT},
+    proto::{InputEvent, Key, MouseButton, Permission},
     session::{accept, connect, ClientMode, HostConfig, Outcome, Session},
     trust::TrustStore,
 };
@@ -50,19 +51,30 @@ fn names(set: PermissionSet) -> Vec<String> {
         .collect()
 }
 
-fn with_default_port(addr: &str) -> String {
-    if addr.parse::<std::net::IpAddr>().is_ok() {
-        return if addr.contains(':') {
-            format!("[{addr}]:{DEFAULT_PORT}")
-        } else {
-            format!("{addr}:{DEFAULT_PORT}")
-        };
-    }
-    if addr.starts_with('[') || addr.contains(':') {
-        addr.to_owned()
-    } else {
-        format!("{addr}:{DEFAULT_PORT}")
-    }
+/// Builds the link a host shows as a QR code for a phone to scan.
+#[napi]
+pub fn pairing_link(address: String, code: String, name: Option<String>) -> Result<String> {
+    Ok(PairingLink::new(&address, &code, name.as_deref())
+        .map_err(err)?
+        .to_string())
+}
+
+#[napi(object)]
+pub struct ParsedLink {
+    pub address: String,
+    pub code: String,
+    pub name: Option<String>,
+}
+
+/// Reads a pairing link, for example one pasted into the app.
+#[napi]
+pub fn parse_pairing_link(link: String) -> Result<ParsedLink> {
+    let l = PairingLink::parse(&link).map_err(err)?;
+    Ok(ParsedLink {
+        address: l.address,
+        code: l.code,
+        name: l.name,
+    })
 }
 
 /// A paired device, or the host on the other end of a connection.

@@ -6,3 +6,10 @@
 node_modules/
 crates/tether-node/tether.node
 apps/desktop/dist/
+apps/ios/Tether/Generated/*.swift
+apps/ios/Frameworks/*.xcframework
+apps/ios/Tether.xcodeproj/
+apps/ios/Tether/Info.plist
+build/
+*.pyc
+__pycache__/

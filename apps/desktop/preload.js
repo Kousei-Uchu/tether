@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('tether', {
   grant: (query, perms) => call('peers:grant', query, perms),
   revoke: (query, perms) => call('peers:revoke', query, perms),
   removePeer: (query) => call('peers:remove', query),
+  parseLink: (text) => call('link:parse', text),
   pair: (address, code) => call('pair', address, code),
   connect: (address) => call('connect', address),
   disconnect: () => call('disconnect'),

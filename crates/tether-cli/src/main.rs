@@ -1,17 +1,16 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::{
-    net::IpAddr,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tether_core::{
     identity::Identity,
+    link::with_default_port,
     pairing::PairingOffer,
     paths::{default_device_name, Paths},
     permissions::PermissionSet,
-    proto::DEFAULT_PORT,
     session::{accept, connect, ClientMode, HostConfig, Outcome},
     trust::TrustStore,
 };
@@ -108,21 +107,6 @@ struct Ctx {
     paths: Paths,
     identity: Identity,
     name: String,
-}
-
-fn with_default_port(addr: &str) -> String {
-    if addr.parse::<IpAddr>().is_ok() {
-        return if addr.contains(':') {
-            format!("[{addr}]:{DEFAULT_PORT}")
-        } else {
-            format!("{addr}:{DEFAULT_PORT}")
-        };
-    }
-    if addr.starts_with('[') || addr.contains(':') {
-        addr.to_owned()
-    } else {
-        format!("{addr}:{DEFAULT_PORT}")
-    }
 }
 
 #[tokio::main]

@@ -153,6 +153,27 @@ async function run() {
   await waitFor(win, `!document.getElementById('host-running').hidden`, 'host running');
   const code = await js(`document.getElementById('host-code').textContent`);
   if (!/^[0-9A-Z]{4}(-[0-9A-Z]{4}){3}$/.test(code)) throw new Error(`bad pairing code ${code}`);
+  // The QR code on screen decodes to the same link that is shown as text, and that link
+  // reads back to this host's address and code.
+  const shown = await js(`({ link: document.getElementById('host-link').textContent, src: document.getElementById('host-qr').src })`);
+  const pixels = await js(`new Promise((resolve, reject) => {
+    const img = document.getElementById('host-qr');
+    const draw = () => {
+      const c = document.createElement('canvas');
+      c.width = 360; c.height = 360;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 360, 360);
+      ctx.drawImage(img, 0, 0, 360, 360);
+      resolve(Array.from(ctx.getImageData(0, 0, 360, 360).data));
+    };
+    img.complete && img.naturalWidth ? draw() : (img.onload = draw, img.onerror = () => reject(new Error('QR image failed to load')));
+  })`);
+  const decoded = require('jsqr')(Uint8ClampedArray.from(pixels), 360, 360);
+  if (!decoded) throw new Error('the QR code could not be decoded');
+  if (decoded.data !== shown.link) throw new Error(`QR says ${decoded.data} but the page shows ${shown.link}`);
+  const parsed = await js(`window.tether.parseLink(${JSON.stringify(shown.link)})`);
+  if (parsed.code !== code) throw new Error(`link code ${parsed.code} is not ${code}`);
+  console.log(`qr ok: ${shown.link}`);
   await js(`document.getElementById('host-stop').click()`);
   await waitFor(win, `document.getElementById('host-running').hidden`, 'host stopped');
 
