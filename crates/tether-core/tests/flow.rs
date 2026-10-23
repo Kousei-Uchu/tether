@@ -42,6 +42,7 @@ fn host_config(d: &Device, offer: Option<PairingOffer>) -> HostConfig {
         device_name: "host".into(),
         media: None,
         input: None,
+        wake: None,
     }
 }
 
@@ -412,6 +413,7 @@ fn with_media(host: &HostConfig) -> (Arc<HostConfig>, Arc<AtomicUsize>, Arc<Atom
             stopped: stopped.clone(),
         })),
         input: None,
+        wake: None,
     };
     (Arc::new(cfg), started, stopped)
 }
@@ -581,6 +583,7 @@ fn with_input(host: &HostConfig, fake: Option<FakeInput>) -> Arc<HostConfig> {
         device_name: host.device_name.clone(),
         media: None,
         input: fake.map(|f| Arc::new(f) as Arc<dyn InputProvider>),
+        wake: None,
     })
 }
 
@@ -775,4 +778,74 @@ async fn revoking_input_releases_the_injector_even_if_the_client_is_silent() {
     client.ping(2).await.unwrap();
     client.bye("done").await.unwrap();
     serve.await.unwrap().unwrap();
+}
+
+struct FakeWake {
+    asked: Mutex<Vec<String>>,
+}
+
+impl tether_core::wake::WakeProvider for FakeWake {
+    fn wake(&self, target: &str) -> Result<String, String> {
+        self.asked.lock().unwrap().push(target.to_owned());
+        if target == "desk" {
+            Ok("Sent a wake signal to desk.".into())
+        } else {
+            Err(format!("no computer called {target}"))
+        }
+    }
+}
+
+async fn wake_answer(cfg: &Arc<HostConfig>, client_dev: &Device, targets: &[&str]) -> Vec<String> {
+    let (host_session, mut client_session) = open_session(cfg, client_dev).await;
+    let h = cfg.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+    let mut notices = Vec::new();
+    for t in targets {
+        client_session.wake(t).await.unwrap();
+        client_session.ping(1).await.unwrap();
+        notices.extend(client_session.take_notices());
+    }
+    client_session.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
+    notices
+}
+
+#[tokio::test]
+async fn waking_needs_a_relay_and_the_power_permission() {
+    let host_dev = device();
+    let client_dev = device();
+    let plain = pair_with_grant(&host_dev, &client_dev, None).await;
+
+    // View only: refused, and the provider is never asked.
+    let fake = Arc::new(FakeWake {
+        asked: Mutex::new(Vec::new()),
+    });
+    let relay = Arc::new(HostConfig {
+        identity: plain.identity.clone(),
+        trust: plain.trust.clone(),
+        pairing: plain.pairing.clone(),
+        device_name: plain.device_name.clone(),
+        media: None,
+        input: None,
+        wake: Some(fake.clone()),
+    });
+    let n = wake_answer(&relay, &client_dev, &["desk"]).await;
+    assert!(n[0].contains("`power`"), "{n:?}");
+    assert!(fake.asked.lock().unwrap().is_empty());
+
+    // With power but no relay on this host.
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.with(Permission::Power))
+        .unwrap();
+    let n = wake_answer(&plain, &client_dev, &["desk"]).await;
+    assert!(n[0].contains("not set up"), "{n:?}");
+
+    // With power and a relay: success, the cooldown, then (after it) an unknown name.
+    let n = wake_answer(&relay, &client_dev, &["desk", "desk"]).await;
+    assert_eq!(n[0], "Sent a wake signal to desk.");
+    assert!(n[1].contains("Wait a moment"), "{n:?}");
+    assert_eq!(fake.asked.lock().unwrap().as_slice(), ["desk"]);
+    tokio::time::sleep(Duration::from_millis(3100)).await;
+    let n = wake_answer(&relay, &client_dev, &["laptop"]).await;
+    assert!(n[0].contains("no computer called laptop"), "{n:?}");
 }

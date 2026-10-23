@@ -71,6 +71,18 @@ enum Cmd {
         /// keyboard. Off unless you pass this.
         #[arg(long)]
         input: bool,
+        /// Act as a wake relay: `name=MAC` or `name=MAC@broadcast` (for example
+        /// `desk=aa:bb:cc:dd:ee:ff@192.168.1.255`). Repeat for more computers. Devices that
+        /// hold the power permission can then wake them with `tether wake`.
+        #[arg(long = "wake", value_name = "NAME=MAC[@BROADCAST]")]
+        wake: Vec<String>,
+    },
+    /// Ask a paired host that is a wake relay to wake one of its computers.
+    Wake {
+        /// The relay's address, `host` or `host:port`.
+        addr: String,
+        /// The name the relay knows the computer by.
+        target: String,
     },
     /// Pair with a host that is running `listen --pair`.
     Pair {
@@ -130,6 +142,9 @@ enum ServiceAction {
         /// Only print what would be installed.
         #[arg(long)]
         dry_run: bool,
+        /// Wake targets, as for `listen --wake`.
+        #[arg(long = "wake", value_name = "NAME=MAC[@BROADCAST]")]
+        wake: Vec<String>,
     },
     /// Stop and remove it.
     Uninstall,
@@ -186,6 +201,7 @@ async fn run() -> Result<()> {
                 input,
                 no_start,
                 dry_run,
+                wake,
             } => {
                 let spec = service::Spec {
                     exe: std::env::current_exe().context("could not find this program")?,
@@ -198,6 +214,7 @@ async fn run() -> Result<()> {
                         tether_media::VideoSpec::Screen(Some(id)) => format!("screen:{id}"),
                     }),
                     input,
+                    wake,
                 };
                 if dry_run {
                     service::show(&spec)
@@ -215,7 +232,9 @@ async fn run() -> Result<()> {
             grant,
             video,
             input,
-        } => listen(ctx, bind, pair, pair_ttl_secs, grant, video, input).await,
+            wake,
+        } => listen(ctx, bind, pair, pair_ttl_secs, grant, video, input, wake).await,
+        Cmd::Wake { addr, target } => wake_via(ctx, &addr, &target).await,
         Cmd::Pair { addr, code } => pair_with(ctx, &addr, code).await,
         Cmd::Connect { addr, pings } => connect_to(ctx, &addr, pings).await,
         Cmd::Peers { action } => peers(ctx, action),
@@ -298,6 +317,7 @@ fn change(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn listen(
     ctx: Ctx,
     bind: String,
@@ -306,7 +326,16 @@ async fn listen(
     grant: PermissionSet,
     video: Option<tether_media::VideoSpec>,
     input: bool,
+    wake: Vec<String>,
 ) -> Result<()> {
+    let relay = if wake.is_empty() {
+        None
+    } else {
+        let relay =
+            tether_core::wake::WolRelay::from_specs(&wake).map_err(|e| anyhow::anyhow!(e))?;
+        println!("can wake     {}", relay.names().join(", "));
+        Some(Arc::new(relay) as Arc<dyn tether_core::wake::WakeProvider>)
+    };
     let trust = TrustStore::load(ctx.paths.trust_file())?;
     let pairing = Arc::new(Mutex::new(None));
     println!("device       {}", ctx.name);
@@ -335,6 +364,7 @@ async fn listen(
         input: input.then(|| {
             Arc::new(tether_input::EnigoInput) as Arc<dyn tether_core::input::InputProvider>
         }),
+        wake: relay,
     });
 
     let listener = TcpListener::bind(&bind)
@@ -412,6 +442,34 @@ async fn pair_with(ctx: Ctx, addr: &str, code: String) -> Result<()> {
         }
         Outcome::Authenticated(_) => bail!("unexpected session while pairing"),
     }
+}
+
+async fn wake_via(ctx: Ctx, addr: &str, target: &str) -> Result<()> {
+    let mut trust = TrustStore::load(ctx.paths.trust_file())?;
+    let stream = dial(addr).await?;
+    let Outcome::Authenticated(mut session) = connect(
+        stream,
+        &ctx.identity,
+        &mut trust,
+        &ctx.name,
+        ClientMode::Connect,
+    )
+    .await?
+    else {
+        bail!("unexpected pairing result");
+    };
+    session.wake(target).await?;
+    // The answer comes back as a notice, ahead of the reply to this ping.
+    session.ping(0).await?;
+    let notices = session.take_notices();
+    session.bye("done").await?;
+    if notices.is_empty() {
+        bail!("the host did not answer");
+    }
+    for n in notices {
+        println!("{n}");
+    }
+    Ok(())
 }
 
 async fn connect_to(ctx: Ctx, addr: &str, pings: u32) -> Result<()> {

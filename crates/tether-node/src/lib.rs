@@ -360,6 +360,7 @@ impl Device {
             input: input
                 .unwrap_or(false)
                 .then(|| Arc::new(EnigoInput) as Arc<dyn tether_core::input::InputProvider>),
+            wake: None,
         });
 
         let listener = TcpListener::bind(&bind)

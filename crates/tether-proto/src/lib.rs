@@ -376,6 +376,11 @@ pub enum Message {
     Notice {
         text: String,
     },
+    /// Client to host: broadcast a Wake-on-LAN packet for the computer called `target`.
+    /// Needs `power`, and the host must have been given wake targets.
+    Wake {
+        target: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -440,6 +445,9 @@ mod tests {
                 text: "héllo".into(),
             }),
             Message::Notice { text: "hi".into() },
+            Message::Wake {
+                target: "desk".into(),
+            },
         ];
         for m in msgs {
             let bytes = encode(&m).unwrap();
@@ -489,6 +497,10 @@ mod tests {
         assert_eq!(
             encode(&Message::Notice { text: "a".into() }).unwrap(),
             vec![11, 1, b'a']
+        );
+        assert_eq!(
+            encode(&Message::Wake { target: "d".into() }).unwrap(),
+            vec![12, 1, b'd']
         );
     }
 

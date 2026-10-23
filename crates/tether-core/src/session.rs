@@ -12,6 +12,7 @@ use crate::{
     pairing::{self, PairingOffer, ProofRole},
     permissions::{PermissionDenied, PermissionSet},
     trust::{TrustStore, TrustedPeer},
+    wake::WakeProvider,
 };
 use std::{
     collections::HashSet,
@@ -39,6 +40,8 @@ pub const PERMISSION_POLL: Duration = Duration::from_secs(1);
 pub const MAX_DROPPABLE_INPUT_PER_SEC: u32 = 1500;
 /// After the host fails to open its input injector, it waits this long before trying again.
 const INPUT_RETRY: Duration = Duration::from_secs(2);
+/// Least time between wake signals from one session, so a stuck button cannot flood the LAN.
+const WAKE_COOLDOWN: Duration = Duration::from_secs(3);
 /// How long a client waits for the host to answer a video offer.
 pub const SIGNAL_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -115,6 +118,9 @@ pub struct HostConfig {
     /// Whether this host lets devices control its mouse and keyboard. `None` means no, even
     /// for a device that holds the `input` permission.
     pub input: Option<Arc<dyn InputProvider>>,
+    /// Wake-on-LAN targets this host can wake for a device holding `power`. `None` means
+    /// this host is not a wake relay.
+    pub wake: Option<Arc<dyn WakeProvider>>,
 }
 
 impl HostConfig {
@@ -407,6 +413,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         Ok(())
     }
 
+    /// Client side: asks the host to wake the computer it knows as `target`. The answer
+    /// arrives as a notice, so call `ping` and then `take_notices`.
+    pub async fn wake(&mut self, target: &str) -> Result<(), SessionError> {
+        self.channel
+            .send(&Message::Wake {
+                target: target.to_owned(),
+            })
+            .await?;
+        Ok(())
+    }
+
     /// Reads whatever the host sent before hanging up, looking for its reason.
     async fn read_goodbye(&mut self) -> Option<String> {
         loop {
@@ -575,6 +592,7 @@ struct HostState {
     window_start: Instant,
     window_count: u32,
     input_retry_at: Option<Instant>,
+    last_wake: Option<Instant>,
 }
 
 impl HostState {
@@ -586,6 +604,7 @@ impl HostState {
             window_start: Instant::now(),
             window_count: 0,
             input_retry_at: None,
+            last_wake: None,
         }
     }
 
@@ -675,6 +694,10 @@ async fn serve_loop<W: AsyncWrite + Unpin>(
                     Message::Input(event) => {
                         handle_input(host, peer, *permissions, sender, state, event).await?;
                     }
+                    Message::Wake { target } => {
+                        let text = handle_wake(host, *permissions, state, &target);
+                        sender.send(&Message::Notice { text }).await?;
+                    }
                     other => tracing::debug!(?other, "ignoring unexpected message"),
                 }
             }
@@ -694,6 +717,29 @@ async fn notify_once<W: AsyncWrite + Unpin>(
         sender.send(&Message::Notice { text }).await?;
     }
     Ok(())
+}
+
+/// Every wake request gets an answer, because the person pressed a button and is waiting.
+fn handle_wake(
+    host: &HostConfig,
+    permissions: PermissionSet,
+    state: &mut HostState,
+    target: &str,
+) -> String {
+    if permissions.require(Permission::Power).is_err() {
+        return "This device is not allowed to use `power` on the host.".to_owned();
+    }
+    let Some(provider) = &host.wake else {
+        return "This host is not set up to wake other computers.".to_owned();
+    };
+    if state
+        .last_wake
+        .is_some_and(|at| at.elapsed() < WAKE_COOLDOWN)
+    {
+        return "Wait a moment before sending another wake signal.".to_owned();
+    }
+    state.last_wake = Some(Instant::now());
+    provider.wake(target).unwrap_or_else(|reason| reason)
 }
 
 async fn handle_input<W: AsyncWrite + Unpin>(

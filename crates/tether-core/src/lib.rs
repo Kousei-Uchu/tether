@@ -10,5 +10,6 @@ pub mod paths;
 pub mod permissions;
 pub mod session;
 pub mod trust;
+pub mod wake;
 
 pub use tether_proto as proto;

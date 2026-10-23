@@ -143,6 +143,22 @@ To serve the test video from the terminal too, add `--video test-pattern` to `li
 
 Set `RUST_LOG=debug` for more detail.
 
+## Waking a sleeping computer
+
+Magic packets do not cross the internet, so something that stays on, on the same network as the computer, has to send them. Any Tether host can do it. On a Raspberry Pi:
+
+```
+tether service install --wake desk=aa:bb:cc:dd:ee:ff@192.168.1.255
+```
+
+Pair your devices with the Pi and give them `power` (`peers grant`). Then from anywhere you can reach the Pi (Tailscale works):
+
+```
+tether wake pi.local desk
+```
+
+The part after `@` is the network's broadcast address; leave it out to use 255.255.255.255. The computer needs Wake-on-LAN turned on in its BIOS and network adapter settings, and should be on Ethernet. A Mac wakes from sleep only (not shut down), and Wi-Fi wake is unreliable on both systems.
+
 ## Running in the background
 
 ```

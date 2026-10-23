@@ -331,8 +331,8 @@ phone, with controls following permission changes live.
 
 ### M6. Wake relay
 
-- [ ] Relay service for a Raspberry Pi: authenticated wake request in, magic packet out
-- [ ] Wake button in desktop and iPhone clients, gated by `power`
+- [x] Relay: any host with `listen --wake name=MAC[@broadcast]` answers an authenticated `Wake` message (`power` needed, 3 s cooldown) with a magic packet. Verified end to end on loopback; not on a real sleeping machine
+- [ ] Wake button in desktop and iPhone clients (CLI `tether wake` exists; `Message::Wake` is index 12)
 - [ ] Setup guide for BIOS, NIC and macOS power settings
 
 ### M7. Multi-display windows and docking

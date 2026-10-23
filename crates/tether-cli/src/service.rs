@@ -24,6 +24,7 @@ pub struct Spec {
     pub bind: String,
     pub video: Option<String>,
     pub input: bool,
+    pub wake: Vec<String>,
 }
 
 impl Spec {
@@ -48,6 +49,10 @@ impl Spec {
         }
         if self.input {
             a.push("--input".into());
+        }
+        for w in &self.wake {
+            a.push("--wake".into());
+            a.push(w.clone());
         }
         a
     }
@@ -313,6 +318,7 @@ mod tests {
             bind: "0.0.0.0:7420".into(),
             video: Some("screen".into()),
             input: true,
+            wake: vec!["desk=aa:bb:cc:dd:ee:ff".into()],
         }
     }
 
@@ -331,7 +337,9 @@ mod tests {
                 "0.0.0.0:7420",
                 "--video",
                 "screen",
-                "--input"
+                "--input",
+                "--wake",
+                "desk=aa:bb:cc:dd:ee:ff"
             ]
         );
         assert!(!a.iter().any(|x| x == "--pair"));
@@ -346,6 +354,7 @@ mod tests {
             bind: "127.0.0.1:1".into(),
             video: None,
             input: false,
+            wake: vec![],
         };
         assert_eq!(s.args(), ["listen", "--bind", "127.0.0.1:1"]);
     }
@@ -373,6 +382,6 @@ mod tests {
         let c = windows_command(&spec());
         assert!(c.starts_with("\"/opt/my apps/tether\" --home \"/data/te ther\" --name "));
         assert!(c.contains("\"Kou's \\\"PC\\\"\""));
-        assert!(c.ends_with("--video screen --input"));
+        assert!(c.ends_with("--input --wake desk=aa:bb:cc:dd:ee:ff"));
     }
 }
