@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('tether', {
   disconnect: () => call('disconnect'),
   pollConnection: () => call('connection:poll'),
   requestVideo: (offer) => call('media:offer', offer),
+  requestDisplayVideo: (display, offer) => call('media:display-offer', display, offer),
+  openViewers: () => call('viewer:open-all'),
   sendInput: (event) => ipcRenderer.send('input:send', event),
   listDisplays: () => call('displays:list'),
   startHost: (options) => call('host:start', options),

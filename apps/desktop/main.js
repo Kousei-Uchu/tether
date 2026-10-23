@@ -30,6 +30,43 @@ app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 let device = null;
 let win = null;
 let connection = null;
+
+// One window per screen of the computer we are connected to, so each can sit on its own
+// monitor. They share the one connection and close with it.
+const viewers = new Set();
+
+function closeViewers() {
+  for (const win of [...viewers]) if (!win.isDestroyed()) win.close();
+  viewers.clear();
+}
+
+function openViewer(display, index, hostName) {
+  const width = 960;
+  const height = Math.max(240, Math.min(900, Math.round((width * display.height) / display.width) + 44));
+  const win = new BrowserWindow({
+    width,
+    height,
+    x: 60 + index * 40,
+    y: 60 + index * 40,
+    title: `${hostName}: ${display.name}`,
+    backgroundColor: '#000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  win.setMenuBarVisibility(false);
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.loadFile(path.join(__dirname, 'renderer', 'viewer.html'), {
+    query: { display: String(display.id), name: display.name, host: hostName },
+  });
+  viewers.add(win);
+  win.on('closed', () => viewers.delete(win));
+  return win;
+}
 let host = null;
 let hostLog = [];
 let hostLinks = [];
@@ -44,7 +81,7 @@ let inputBusy = false;
 function cleanInput(raw) {
   if (!raw || typeof raw !== 'object' || !INPUT_KINDS.has(raw.kind)) return null;
   const out = { kind: raw.kind };
-  for (const key of ['x', 'y', 'dx', 'dy']) if (typeof raw[key] === 'number') out[key] = raw[key];
+  for (const key of ['x', 'y', 'dx', 'dy', 'display']) if (typeof raw[key] === 'number') out[key] = raw[key];
   for (const key of ['button', 'code', 'text']) if (typeof raw[key] === 'string') out[key] = raw[key];
   if (typeof raw.down === 'boolean') out.down = raw.down;
   return out;
@@ -127,11 +164,13 @@ function registerIpc() {
   handle('pair', (address, code) => device.pair(String(address), String(code)));
 
   handle('connect', async (address) => {
+    closeViewers();
     if (connection) await connection.close().catch(() => {});
     connection = await device.connect(String(address));
     return connectionState();
   });
   handle('disconnect', async () => {
+    closeViewers();
     if (connection) await connection.close().catch(() => {});
     connection = null;
     return connectionState();
@@ -144,6 +183,7 @@ function registerIpc() {
       return { ...connectionState(), rttMs, notices };
     } catch (e) {
       connection = null;
+      closeViewers();
       return { connected: false, lostReason: e instanceof Error ? e.message : String(e) };
     }
   });
@@ -153,6 +193,21 @@ function registerIpc() {
   handle('media:offer', (offer) => {
     if (!connection) throw new Error('Not connected.');
     return connection.requestVideo(String(offer));
+  });
+
+  handle('media:display-offer', (display, offer) => {
+    if (!connection) throw new Error('Not connected.');
+    if (!Number.isInteger(display)) throw new Error('Unknown display.');
+    return connection.requestDisplayVideo(display, String(offer));
+  });
+
+  handle('viewer:open-all', async () => {
+    if (!connection) throw new Error('Not connected.');
+    const list = await connection.listRemoteDisplays();
+    const hostName = connection.peer?.name || 'Host';
+    closeViewers();
+    list.forEach((display, i) => openViewer(display, i, hostName));
+    return list.length;
   });
 
   handle('displays:list', () => {

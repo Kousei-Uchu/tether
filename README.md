@@ -143,6 +143,12 @@ To serve the test video from the terminal too, add `--video test-pattern` to `li
 
 Set `RUST_LOG=debug` for more detail.
 
+## Every screen in its own window
+
+When you are connected to a computer with several monitors, "Open every screen in its own window" in the desktop app opens one window per monitor, each with its own video, so you can put them on your own monitors. Tick "Control this screen" in a window and your mouse acts on that monitor of the other computer. Keyboard and scroll go wherever the pointer is on the other end, as usual. It needs `view`, and `input` to control.
+
+The older single view ("Show screen") still shows only the main monitor. Each extra screen costs another encode on the host, so a laptop sharing three monitors works noticeably harder than one sharing one. With `--video test-pattern` the host pretends to have two screens, which is handy for trying this out.
+
 ## Media keys
 
 A device with the `media` permission gets a row of play, pause, track and volume buttons in the desktop app and on the iPhone. They press the real media keys on the other computer, so the host needs remote control turned on (`--input` or the checkbox), and the key presses go to whatever app that computer sends them to.

@@ -251,6 +251,15 @@ screen.addEventListener('blur', () => releaseAll());
 window.addEventListener('blur', () => releaseAll());
 
 $('show-screen').addEventListener('click', startVideo);
+$('open-viewers').addEventListener('click', async () => {
+  say('screen-msg', 'Opening the screens...');
+  try {
+    const count = await window.tether.openViewers();
+    say('screen-msg', count === 0 ? 'The other computer has no screen to show.' : '');
+  } catch (e) {
+    say('screen-msg', e.message);
+  }
+});
 $('stop-screen').addEventListener('click', () => stopVideo(''));
 
 // ----- connecting -----
@@ -272,6 +281,7 @@ function showConnection(state) {
   }
   const mayView = mayViewNow;
   $('show-screen').disabled = !mayView || viewer !== null;
+  $('open-viewers').disabled = !mayView;
   if (!mayView && viewer) stopVideo('The host turned off your access to its screen.');
   if (!mayView && !viewer && !$('screen-msg').textContent) {
     say('screen-msg', 'This device is not allowed to view the screen. Ask the host to grant it.');

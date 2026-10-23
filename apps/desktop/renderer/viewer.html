@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tether screen</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="viewer.css" />
+  </head>
+  <body class="viewer">
+    <div class="bar">
+      <label class="check">
+        <input id="control" type="checkbox" />
+        Control this screen
+      </label>
+      <span id="msg" class="msg" role="status">Asking for the screen...</span>
+    </div>
+    <video id="screen" autoplay muted playsinline tabindex="0"></video>
+    <script src="viewer.js"></script>
+  </body>
+</html>

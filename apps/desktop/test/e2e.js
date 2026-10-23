@@ -140,6 +140,56 @@ async function run() {
   await waitFor(win, `window.__seen.keys.includes('AudioVolumeUp')`, 'the volume key to arrive', 8000);
   console.log('input ok: media key arrived');
 
+  // Every screen of the host in its own window, each with its own video.
+  await js(`document.getElementById('open-viewers').click()`);
+  let views = [];
+  for (let i = 0; i < 100 && views.length < 2; i++) {
+    views = BrowserWindow.getAllWindows().filter((w) => w !== win);
+    await sleep(100);
+  }
+  if (views.length !== 2) throw new Error(`expected 2 screen windows, saw ${views.length}`);
+  const sizes = {};
+  for (const v of views) {
+    await waitFor(v, `document.getElementById('screen').videoWidth > 0`, 'a screen window to show video', 15000);
+    const size = await v.webContents.executeJavaScript(
+      `document.getElementById('screen').videoWidth + 'x' + document.getElementById('screen').videoHeight`,
+    );
+    sizes[v.getTitle()] = size;
+  }
+  const bySize = Object.values(sizes).sort().join(',');
+  if (bySize !== '480x270,640x360') throw new Error(`unexpected screen sizes ${JSON.stringify(sizes)}`);
+  console.log(`screens ok: ${JSON.stringify(sizes)}`);
+
+  // Aiming at the middle of the second screen moves the host pointer to the middle of that
+  // screen's part of the desktop (it starts 640 pixels to the right).
+  const secondView = views.find((v) => sizes[v.getTitle()] === '480x270');
+  await secondView.webContents.executeJavaScript(`(() => {
+    const box = document.getElementById('control');
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
+  })()`);
+  await secondView.webContents.executeJavaScript(`(() => {
+    const v = document.getElementById('screen');
+    const b = v.getBoundingClientRect();
+    const s = Math.min(b.width / v.videoWidth, b.height / v.videoHeight);
+    const cw = v.videoWidth * s, ch = v.videoHeight * s;
+    const left = b.left + (b.width - cw) / 2, top = b.top + (b.height - ch) / 2;
+    v.dispatchEvent(new MouseEvent('mousemove', { clientX: left + 0.5 * cw, clientY: top + 0.5 * ch, bubbles: true }));
+  })()`);
+  const wantX = 640 + Math.round(0.5 * 479);
+  const wantY = Math.round(0.5 * 269);
+  let at = { x: -1, y: -1 };
+  for (let i = 0; i < 80; i++) {
+    at = require('electron').screen.getCursorScreenPoint();
+    if (Math.abs(at.x - wantX) <= 3 && Math.abs(at.y - wantY) <= 3) break;
+    await sleep(100);
+  }
+  if (Math.abs(at.x - wantX) > 3 || Math.abs(at.y - wantY) > 3) {
+    throw new Error(`pointer at ${at.x},${at.y}, wanted near ${wantX},${wantY}`);
+  }
+  console.log(`screens ok: pointer on screen 2 arrived near ${wantX},${wantY}`);
+  for (const v of views) v.close();
+
   // Taking the input permission away disables the control box in the window.
   hostDev.revoke(hostDev.peers()[0].fingerprint, ['input']);
   await waitFor(win, `document.getElementById('control').disabled && !document.getElementById('control').checked`, 'control to switch off after revoke', 8000);

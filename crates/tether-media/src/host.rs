@@ -13,6 +13,7 @@ use std::{
 };
 use tether_core::{
     media::{MediaAnswer, MediaFuture, MediaProvider},
+    proto::DisplayDesc,
     session::PeerInfo,
 };
 use tokio::{sync::mpsc, time::timeout};
@@ -122,19 +123,57 @@ impl std::str::FromStr for VideoSpec {
     }
 }
 
+type DisplaySourceFactory = Arc<dyn Fn(u32) -> Result<Box<dyn FrameSource>, String> + Send + Sync>;
 type SourceFactory = Arc<dyn Fn() -> Result<Box<dyn FrameSource>, String> + Send + Sync>;
+
+/// The test pattern pretends to be two screens side by side, so multi window viewing and
+/// pointer routing can be tried without two monitors.
+fn test_display_size(id: u32) -> Option<(usize, usize)> {
+    match id {
+        1 => Some((640, 360)),
+        2 => Some((480, 270)),
+        _ => None,
+    }
+}
+
+fn test_displays() -> Vec<DisplayDesc> {
+    [(1u32, 0i32, true), (2, 640, false)]
+        .into_iter()
+        .map(|(id, x, primary)| {
+            let (w, h) = test_display_size(id).unwrap_or((0, 0));
+            DisplayDesc {
+                id,
+                name: format!("Test pattern {id}"),
+                width: w as u32,
+                height: h as u32,
+                x,
+                y: 0,
+                primary,
+            }
+        })
+        .collect()
+}
 
 /// Streams video from a [`FrameSource`] to whoever offers to watch.
 pub struct VideoHost {
     make_source: SourceFactory,
     opts: MediaOptions,
+    /// The displays a viewer can ask for one by one, and how to open one.
+    list_displays: Arc<dyn Fn() -> Vec<DisplayDesc> + Send + Sync>,
+    display_source: DisplaySourceFactory,
 }
 
 impl VideoHost {
     /// Streams the built in test pattern.
     pub fn test_pattern(opts: MediaOptions) -> Self {
         let (w, h) = (opts.width, opts.height);
-        Self::with_source(opts, move || Ok(Box::new(TestPattern::new(w, h)?)))
+        Self::with_source(opts, move || Ok(Box::new(TestPattern::new(w, h)?))).with_displays(
+            test_displays,
+            |id| {
+                let (w, h) = test_display_size(id).ok_or_else(|| format!("no display {id}"))?;
+                Ok(Box::new(TestPattern::new(w, h)?))
+            },
+        )
     }
 
     /// Streams whatever `spec` names.
@@ -155,6 +194,29 @@ impl VideoHost {
                 crate::capture::DEFAULT_MAX_SIZE,
             )?))
         })
+        .with_displays(
+            || {
+                crate::capture::list_displays()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|d| DisplayDesc {
+                        id: d.id,
+                        name: d.name,
+                        width: d.width,
+                        height: d.height,
+                        x: d.x,
+                        y: d.y,
+                        primary: d.primary,
+                    })
+                    .collect()
+            },
+            |id| {
+                Ok(Box::new(crate::capture::ScreenSource::new(
+                    Some(id),
+                    crate::capture::DEFAULT_MAX_SIZE,
+                )?))
+            },
+        )
     }
 
     /// Streams any source. `make_source` runs once per viewer.
@@ -165,11 +227,28 @@ impl VideoHost {
         Self {
             make_source: Arc::new(make_source),
             opts,
+            list_displays: Arc::new(Vec::new),
+            display_source: Arc::new(|_| Err("this host cannot share displays one by one".into())),
         }
     }
 
-    async fn start(&self, offer: String) -> Result<(String, ViewerGuard), String> {
-        let source = (self.make_source)()?;
+    /// Lets viewers ask for each display separately: `list` says which exist, `open` makes
+    /// the source for one of them.
+    pub fn with_displays(
+        mut self,
+        list: impl Fn() -> Vec<DisplayDesc> + Send + Sync + 'static,
+        open: impl Fn(u32) -> Result<Box<dyn FrameSource>, String> + Send + Sync + 'static,
+    ) -> Self {
+        self.list_displays = Arc::new(list);
+        self.display_source = Arc::new(open);
+        self
+    }
+
+    async fn start(
+        &self,
+        offer: String,
+        source: Box<dyn FrameSource>,
+    ) -> Result<(String, ViewerGuard), String> {
         let encoder = H264Encoder::new(self.opts.fps, self.opts.bitrate_kbps)?;
 
         let mut media = MediaEngine::default();
@@ -301,8 +380,28 @@ impl MediaProvider for VideoHost {
     fn answer<'a>(&'a self, peer: &'a PeerInfo, offer: String) -> MediaFuture<'a> {
         Box::pin(async move {
             tracing::info!(viewer = %peer.name, "starting video");
+            let source = (self.make_source)()?;
             let (sdp, guard) = self
-                .start(offer)
+                .start(offer, source)
+                .await
+                .map_err(|e| format!("could not start video: {e}"))?;
+            Ok(MediaAnswer {
+                sdp,
+                guard: Box::new(guard),
+            })
+        })
+    }
+
+    fn displays(&self) -> Vec<DisplayDesc> {
+        (self.list_displays)()
+    }
+
+    fn answer_display<'a>(&'a self, peer: &'a PeerInfo, id: u32, offer: String) -> MediaFuture<'a> {
+        Box::pin(async move {
+            tracing::info!(viewer = %peer.name, display_id = id, "starting video for one display");
+            let source = (self.display_source)(id)?;
+            let (sdp, guard) = self
+                .start(offer, source)
                 .await
                 .map_err(|e| format!("could not start video: {e}"))?;
             Ok(MediaAnswer {

@@ -292,6 +292,18 @@ pub enum InputEvent {
     Text {
         text: String,
     },
+    /// Absolute pointer position as a fraction (0 to 65535) of one display, for a viewer
+    /// showing each display in its own window. The host turns it into `MouseMoveAt`.
+    MouseMoveOn {
+        display: u32,
+        x: u16,
+        y: u16,
+    },
+    /// Absolute pointer position in the host's combined desktop.
+    MouseMoveAt {
+        x: i32,
+        y: i32,
+    },
 }
 
 impl InputEvent {
@@ -309,10 +321,26 @@ impl InputEvent {
         matches!(
             self,
             InputEvent::MouseMove { .. }
+                | InputEvent::MouseMoveOn { .. }
+                | InputEvent::MouseMoveAt { .. }
                 | InputEvent::MouseDelta { .. }
                 | InputEvent::Scroll { .. }
         )
     }
+}
+
+/// One display on the host that can be streamed on its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayDesc {
+    pub id: u32,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// Top left corner in the host's combined desktop, in the same units as `width` and
+    /// `height`. Negative if the display sits left of or above the primary one.
+    pub x: i32,
+    pub y: i32,
+    pub primary: bool,
 }
 
 /// What a [`Message::Signal`] carries. Wire order is stable (append only).
@@ -380,6 +408,20 @@ pub enum Message {
     /// Needs `power`, and the host must have been given wake targets.
     Wake {
         target: String,
+    },
+    /// Client to host: which displays can be streamed one by one. Needs `view`.
+    ListDisplays,
+    /// Host to client: the answer to `ListDisplays`. Empty if the host shares no screen or
+    /// this device lacks `view`.
+    Displays {
+        list: Vec<DisplayDesc>,
+    },
+    /// Like `Signal`, for one display. Each display has its own WebRTC connection, so a
+    /// viewer can show every screen at once. Needs `view`.
+    DisplaySignal {
+        display: u32,
+        kind: SignalKind,
+        payload: String,
     },
 }
 
@@ -501,6 +543,33 @@ mod tests {
         assert_eq!(
             encode(&Message::Wake { target: "d".into() }).unwrap(),
             vec![12, 1, b'd']
+        );
+        assert_eq!(encode(&Message::ListDisplays).unwrap(), vec![13]);
+        assert_eq!(
+            encode(&Message::Displays { list: vec![] }).unwrap(),
+            vec![14, 0]
+        );
+        assert_eq!(
+            encode(&Message::DisplaySignal {
+                display: 1,
+                kind: SignalKind::Offer,
+                payload: "x".into()
+            })
+            .unwrap(),
+            vec![15, 1, 0, 1, b'x']
+        );
+        assert_eq!(
+            encode(&Message::Input(InputEvent::MouseMoveOn {
+                display: 1,
+                x: 2,
+                y: 3
+            }))
+            .unwrap(),
+            vec![10, 6, 1, 2, 3]
+        );
+        assert_eq!(
+            encode(&Message::Input(InputEvent::MouseMoveAt { x: -1, y: 2 })).unwrap(),
+            vec![10, 7, 1, 4]
         );
     }
 

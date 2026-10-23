@@ -284,7 +284,7 @@ when the host revokes `view`. Met with the test pattern.
 - [ ] Windows capture (Windows Graphics Capture or DXGI), hardware encode (Media Foundation, NVENC)
 - [ ] macOS capture (ScreenCaptureKit), hardware encode (VideoToolbox)
 - [x] Choose the display (`tether displays`, `--video screen:<id>`, dropdown in the app)
-- [ ] One video track per display
+- [x] One video stream per display (`ListDisplays`, `DisplaySignal`, `InputEvent::MouseMoveOn`), one desktop window per display. Verified with the test pattern posing as two screens, through Electron, the bridge, the session and a real X pointer. Real multi-monitor capture and pointer mapping on Windows and macOS are not verified
 - [x] Host as a background service: `tether service install|uninstall|status` (systemd user unit, macOS launch agent, Windows logon task; per user because capture needs the desktop session). Definitions unit tested; only the Linux file writing was run for real, and not against a live systemd
 
 Acceptance: the Mac sees the PC's screen and the PC sees the Mac's, at 30 fps on a LAN.
@@ -337,7 +337,7 @@ phone, with controls following permission changes live.
 
 ### M7. Multi-display windows and docking
 
-- [ ] One track and one window per physical display
+- [x] One track and one window per physical display (see M3c)
 - [ ] Window snapping and saved layouts
 - [ ] Edge crossing of the cursor between machines
 

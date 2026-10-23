@@ -20,7 +20,7 @@ export interface HostEvent {
 
 /** `move`: x,y are 0..1 of the display. `delta`: dx,dy in pixels. `scroll`: lines, positive is down or right. */
 export type InputEvent =
-  | { kind: 'move'; x: number; y: number }
+  | { kind: 'move'; x: number; y: number; display?: number }
   | { kind: 'delta'; dx: number; dy: number }
   | { kind: 'button'; button: 'left' | 'right' | 'middle' | 'back' | 'forward'; down: boolean }
   | { kind: 'scroll'; dx?: number; dy?: number }
@@ -76,6 +76,10 @@ export class Connection {
   takeNotices(): Promise<string[]>;
   /** Sends a WebRTC offer, resolves with the host's answer. Needs the "view" permission. */
   requestVideo(offer: string): Promise<string>;
+  /** The displays the host can stream one by one. Needs the "view" permission. */
+  listRemoteDisplays(): Promise<Display[]>;
+  /** Like requestVideo, for one display. Each display has its own connection. */
+  requestDisplayVideo(display: number, offer: string): Promise<string>;
   close(): Promise<void>;
 }
 
@@ -93,6 +97,9 @@ export interface Display {
   name: string;
   width: number;
   height: number;
+  /** Top left corner in the combined desktop. */
+  x: number;
+  y: number;
   primary: boolean;
 }
 

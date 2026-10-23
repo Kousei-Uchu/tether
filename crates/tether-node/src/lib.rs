@@ -66,6 +66,8 @@ pub struct DisplayJs {
     pub name: String,
     pub width: u32,
     pub height: u32,
+    pub x: i32,
+    pub y: i32,
     pub primary: bool,
 }
 
@@ -80,6 +82,8 @@ pub fn list_displays() -> Result<Vec<DisplayJs>> {
             name: d.name,
             width: d.width,
             height: d.height,
+            x: d.x,
+            y: d.y,
             primary: d.primary,
         })
         .collect())
@@ -139,6 +143,9 @@ pub struct InputEventJs {
     pub code: Option<String>,
     pub down: Option<bool>,
     pub text: Option<String>,
+    /// With `move`: aim at this display (an id from `listRemoteDisplays`), with `x` and `y`
+    /// as fractions of that display.
+    pub display: Option<u32>,
 }
 
 fn to_input_event(e: InputEventJs) -> Result<InputEvent> {
@@ -146,10 +153,16 @@ fn to_input_event(e: InputEventJs) -> Result<InputEvent> {
     let frac = |v: f64| (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
     let lines = |v: i32| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
     Ok(match e.kind.as_str() {
-        "move" => InputEvent::MouseMove {
-            x: frac(e.x.ok_or_else(|| need("x"))?),
-            y: frac(e.y.ok_or_else(|| need("y"))?),
-        },
+        "move" => {
+            let (x, y) = (
+                frac(e.x.ok_or_else(|| need("x"))?),
+                frac(e.y.ok_or_else(|| need("y"))?),
+            );
+            match e.display {
+                Some(display) => InputEvent::MouseMoveOn { display, x, y },
+                None => InputEvent::MouseMove { x, y },
+            }
+        }
         "delta" => InputEvent::MouseDelta {
             dx: lines(e.dx.ok_or_else(|| need("dx"))?),
             dy: lines(e.dy.ok_or_else(|| need("dy"))?),
@@ -463,6 +476,38 @@ impl Connection {
         let mut guard = self.session.lock().await;
         let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
         session.request_video(offer).await.map_err(err)
+    }
+
+    /// The displays the host can stream one by one. Needs the `view` permission.
+    #[napi]
+    pub async fn list_remote_displays(&self) -> Result<Vec<DisplayJs>> {
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
+        let list = session.list_displays().await.map_err(err)?;
+        Ok(list
+            .into_iter()
+            .map(|d| DisplayJs {
+                id: d.id,
+                name: d.name,
+                width: d.width,
+                height: d.height,
+                x: d.x,
+                y: d.y,
+                primary: d.primary,
+            })
+            .collect())
+    }
+
+    /// Like `requestVideo`, for one display from `listRemoteDisplays`. Each display has its
+    /// own connection, so a viewer can show every screen at once.
+    #[napi]
+    pub async fn request_display_video(&self, display: u32, offer: String) -> Result<String> {
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
+        session
+            .request_display_video(display, offer)
+            .await
+            .map_err(err)
     }
 
     /// Sends one mouse or keyboard event to the host. Fire and forget: if the host refuses it,

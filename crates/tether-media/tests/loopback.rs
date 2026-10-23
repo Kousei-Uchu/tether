@@ -35,7 +35,32 @@ async fn a_viewer_receives_rtp_and_the_guard_ends_the_session() {
         fps: 30,
         bitrate_kbps: 1000,
     });
-    stream_then_stop(host).await;
+    stream_then_stop(&host, None, 40).await;
+}
+
+/// Each display has its own connection, and several run at once on one host.
+#[tokio::test]
+async fn every_display_streams_on_its_own() {
+    let host = VideoHost::test_pattern(MediaOptions::default());
+    let listed = host.displays();
+    assert_eq!(listed.len(), 2);
+    assert_ne!(listed[0].id, listed[1].id);
+    tokio::join!(
+        stream_then_stop(&host, Some(listed[0].id), 40),
+        stream_then_stop(&host, Some(listed[1].id), 40),
+    );
+
+    let peer = PeerInfo {
+        name: "viewer".into(),
+        platform: Platform::Linux,
+        public_key: [7; 32],
+    };
+    let err = host
+        .answer_display(&peer, 99, String::new())
+        .await
+        .err()
+        .expect("unknown display is refused");
+    assert!(err.contains("99"), "{err}");
 }
 
 /// The same path with a real display as the source. Needs an X display, so run it with
@@ -44,10 +69,11 @@ async fn a_viewer_receives_rtp_and_the_guard_ends_the_session() {
 #[tokio::test]
 #[ignore = "needs an X display, run with xvfb-run"]
 async fn a_real_screen_streams_to_a_viewer() {
-    stream_then_stop(VideoHost::screen(MediaOptions::default(), None)).await;
+    stream_then_stop(&VideoHost::screen(MediaOptions::default(), None), None, 10).await;
 }
 
-async fn stream_then_stop(host: VideoHost) {
+/// `min_packets` is lower for a real screen: a still picture compresses to very little.
+async fn stream_then_stop(host: &VideoHost, display: Option<u32>, min_packets: usize) {
     // Viewer side, built the way a browser behaves: it offers a receive-only video line.
     let mut media = MediaEngine::default();
     media.register_default_codecs().unwrap();
@@ -101,7 +127,11 @@ async fn stream_then_stop(host: VideoHost) {
         platform: Platform::Linux,
         public_key: [7; 32],
     };
-    let answer = host.answer(&peer, offer_sdp).await.expect("host answers");
+    let answer = match display {
+        None => host.answer(&peer, offer_sdp).await,
+        Some(id) => host.answer_display(&peer, id, offer_sdp).await,
+    }
+    .expect("host answers");
     assert!(
         answer.sdp.contains("H264"),
         "answer should negotiate H.264:\n{}",
@@ -116,12 +146,12 @@ async fn stream_then_stop(host: VideoHost) {
     let mut seen = 0;
     for _ in 0..150 {
         seen = packets.load(Ordering::Relaxed);
-        if seen >= 40 {
+        if seen >= min_packets {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(seen >= 40, "only {seen} RTP packets arrived");
+    assert!(seen >= min_packets, "only {seen} RTP packets arrived");
 
     // Ending the session stops the flow.
     drop(answer.guard);

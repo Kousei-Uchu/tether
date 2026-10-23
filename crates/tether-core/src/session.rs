@@ -15,12 +15,13 @@ use crate::{
     wake::WakeProvider,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tether_proto::{
-    Hello, InputEvent, Intent, Message, Permission, Platform, SignalKind, PROTOCOL_VERSION,
+    DisplayDesc, Hello, InputEvent, Intent, Message, Permission, Platform, SignalKind,
+    PROTOCOL_VERSION,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -41,6 +42,8 @@ pub const MAX_DROPPABLE_INPUT_PER_SEC: u32 = 1500;
 /// After the host fails to open its input injector, it waits this long before trying again.
 const INPUT_RETRY: Duration = Duration::from_secs(2);
 /// Least time between wake signals from one session, so a stuck button cannot flood the LAN.
+/// How long a host reuses its list of displays while translating pointer moves.
+const DISPLAY_CACHE_TTL: Duration = Duration::from_secs(2);
 const WAKE_COOLDOWN: Duration = Duration::from_secs(3);
 /// How long a client waits for the host to answer a video offer.
 pub const SIGNAL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -413,6 +416,60 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         Ok(())
     }
 
+    /// Client side: the displays the host can stream one by one. Needs `view`.
+    pub async fn list_displays(&mut self) -> Result<Vec<DisplayDesc>, SessionError> {
+        self.channel.send(&Message::ListDisplays).await?;
+        loop {
+            match timeout(SIGNAL_TIMEOUT, self.channel.recv())
+                .await
+                .map_err(|_| SessionError::Timeout)??
+            {
+                Message::Displays { list } => return Ok(list),
+                Message::Permissions { granted } => self.permissions = granted.into(),
+                Message::Notice { text } => self.push_notice(text),
+                Message::Bye { reason } => return Err(SessionError::Rejected(reason)),
+                _ => continue,
+            }
+        }
+    }
+
+    /// Client side: like `request_video`, for one display from `list_displays`. Each display
+    /// gets its own WebRTC connection, so call this once per screen.
+    pub async fn request_display_video(
+        &mut self,
+        display: u32,
+        offer: String,
+    ) -> Result<String, SessionError> {
+        self.channel
+            .send(&Message::DisplaySignal {
+                display,
+                kind: SignalKind::Offer,
+                payload: offer,
+            })
+            .await?;
+        loop {
+            match timeout(SIGNAL_TIMEOUT, self.channel.recv())
+                .await
+                .map_err(|_| SessionError::Timeout)??
+            {
+                Message::DisplaySignal {
+                    display: d,
+                    kind: SignalKind::Answer,
+                    payload,
+                } if d == display => return Ok(payload),
+                Message::DisplaySignal {
+                    display: d,
+                    kind: SignalKind::Error,
+                    payload,
+                } if d == display => return Err(SessionError::Signal(payload)),
+                Message::Permissions { granted } => self.permissions = granted.into(),
+                Message::Notice { text } => self.push_notice(text),
+                Message::Bye { reason } => return Err(SessionError::Rejected(reason)),
+                _ => continue,
+            }
+        }
+    }
+
     /// Client side: asks the host to wake the computer it knows as `target`. The answer
     /// arrives as a notice, so call `ping` and then `take_notices`.
     pub async fn wake(&mut self, target: &str) -> Result<(), SessionError> {
@@ -586,6 +643,9 @@ where
 /// Everything the host holds open for one connected device.
 struct HostState {
     media: Option<Box<dyn Send>>,
+    /// One running stream per display, for viewers that show each screen separately.
+    displays: HashMap<u32, Box<dyn Send>>,
+    display_cache: Option<(Instant, Vec<DisplayDesc>)>,
     input: Option<Box<dyn InputSink>>,
     /// Notices already sent, so each reason is told once until permissions change.
     notified: HashSet<&'static str>,
@@ -599,6 +659,8 @@ impl HostState {
     fn new(media: Option<Box<dyn Send>>) -> Self {
         Self {
             media,
+            displays: HashMap::new(),
+            display_cache: None,
             input: None,
             notified: HashSet::new(),
             window_start: Instant::now(),
@@ -612,6 +674,7 @@ impl HostState {
     fn enforce(&mut self, p: PermissionSet) {
         if !p.contains(Permission::View) {
             self.media = None;
+            self.displays.clear();
         }
         if !p.contains(Permission::Input) && !p.contains(Permission::Media) {
             self.input = None;
@@ -691,6 +754,29 @@ async fn serve_loop<W: AsyncWrite + Unpin>(
                         };
                         sender.send(&reply).await?;
                     }
+                    Message::ListDisplays => {
+                        let list = match permissions.require(Permission::View) {
+                            Ok(()) => host.media.as_ref().map(|m| m.displays()).unwrap_or_default(),
+                            Err(_) => {
+                                let text = "This device is not allowed to use `view` on the host.".to_owned();
+                                sender.send(&Message::Notice { text }).await?;
+                                Vec::new()
+                            }
+                        };
+                        sender.send(&Message::Displays { list }).await?;
+                    }
+                    Message::DisplaySignal { display, kind: SignalKind::Offer, payload } => {
+                        // A new offer for a display replaces that display's stream only.
+                        state.displays.remove(&display);
+                        let reply = match display_offer_reply(host, peer, *permissions, display, payload).await {
+                            Ok((sdp, guard)) => {
+                                state.displays.insert(display, guard);
+                                Message::DisplaySignal { display, kind: SignalKind::Answer, payload: sdp }
+                            }
+                            Err(reason) => Message::DisplaySignal { display, kind: SignalKind::Error, payload: reason },
+                        };
+                        sender.send(&reply).await?;
+                    }
                     Message::Input(event) => {
                         handle_input(host, peer, *permissions, sender, state, event).await?;
                     }
@@ -759,6 +845,18 @@ async fn handle_input<W: AsyncWrite + Unpin>(
         let text = "Remote control is turned off on the host.".to_owned();
         return notify_once(sender, state, "off", text).await;
     };
+    let event = match event {
+        InputEvent::MouseMoveOn { display, x, y } => {
+            match display_point(host, state, display, x, y) {
+                Some(at) => at,
+                None => {
+                    let text = format!("The host has no display {display} to point at.");
+                    return notify_once(sender, state, "display", text).await;
+                }
+            }
+        }
+        other => other,
+    };
     if event.is_droppable() && !state.within_rate() {
         return Ok(());
     }
@@ -783,6 +881,55 @@ async fn handle_input<W: AsyncWrite + Unpin>(
         }
     }
     Ok(())
+}
+
+/// Where a pointer position on one display lands in the host's combined desktop.
+fn display_point(
+    host: &HostConfig,
+    state: &mut HostState,
+    display: u32,
+    x: u16,
+    y: u16,
+) -> Option<InputEvent> {
+    let stale = match &state.display_cache {
+        Some((at, _)) => at.elapsed() > DISPLAY_CACHE_TTL,
+        None => true,
+    };
+    if stale {
+        let list = host
+            .media
+            .as_ref()
+            .map(|m| m.displays())
+            .unwrap_or_default();
+        state.display_cache = Some((Instant::now(), list));
+    }
+    let (_, list) = state.display_cache.as_ref()?;
+    let d = list.iter().find(|d| d.id == display)?;
+    let at = |origin: i32, size: u32, frac: u16| {
+        let span = f64::from(size.saturating_sub(1));
+        origin + (f64::from(frac) / 65535.0 * span).round() as i32
+    };
+    Some(InputEvent::MouseMoveAt {
+        x: at(d.x, d.width, x),
+        y: at(d.y, d.height, y),
+    })
+}
+
+async fn display_offer_reply(
+    host: &HostConfig,
+    peer: &PeerInfo,
+    permissions: PermissionSet,
+    display: u32,
+    offer: String,
+) -> Result<(String, Box<dyn Send>), String> {
+    permissions
+        .require(Permission::View)
+        .map_err(|e| e.to_string())?;
+    let Some(media) = &host.media else {
+        return Err("this device is not sharing its screen".into());
+    };
+    let answer = media.answer_display(peer, display, offer).await?;
+    Ok((answer.sdp, answer.guard))
 }
 
 async fn offer_reply(

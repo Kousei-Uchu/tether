@@ -248,10 +248,12 @@ fn show_displays() -> Result<()> {
     }
     for d in displays {
         println!(
-            "{:<6} {}x{}  {}{}",
+            "{:<6} {}x{} at {},{}  {}{}",
             d.id,
             d.width,
             d.height,
+            d.x,
+            d.y,
             d.name,
             if d.primary { "  (primary)" } else { "" }
         );

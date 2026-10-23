@@ -388,7 +388,47 @@ impl Drop for StopFlag {
     }
 }
 
+fn fake_displays() -> Vec<tether_core::proto::DisplayDesc> {
+    let d = |id, x, y, width, height, primary| tether_core::proto::DisplayDesc {
+        id,
+        name: format!("Display {id}"),
+        width,
+        height,
+        x,
+        y,
+        primary,
+    };
+    vec![
+        d(1, 0, 0, 1920, 1080, true),
+        d(2, 1920, 0, 1280, 720, false),
+        // Left of and below the primary display, so coordinates can be negative.
+        d(3, -1000, 100, 1000, 500, false),
+    ]
+}
+
 impl MediaProvider for FakeMedia {
+    fn displays(&self) -> Vec<tether_core::proto::DisplayDesc> {
+        fake_displays()
+    }
+
+    fn answer_display<'a>(
+        &'a self,
+        _peer: &'a PeerInfo,
+        display: u32,
+        offer: String,
+    ) -> MediaFuture<'a> {
+        Box::pin(async move {
+            if !fake_displays().iter().any(|d| d.id == display) {
+                return Err(format!("no display {display}"));
+            }
+            self.started.fetch_add(1, Ordering::SeqCst);
+            Ok(MediaAnswer {
+                sdp: format!("answer-{display}-for:{offer}"),
+                guard: Box::new(StopFlag(self.stopped.clone())),
+            })
+        })
+    }
+
     fn answer<'a>(&'a self, _peer: &'a PeerInfo, offer: String) -> MediaFuture<'a> {
         Box::pin(async move {
             self.started.fetch_add(1, Ordering::SeqCst);
@@ -848,4 +888,106 @@ async fn waking_needs_a_relay_and_the_power_permission() {
     tokio::time::sleep(Duration::from_millis(3100)).await;
     let n = wake_answer(&relay, &client_dev, &["laptop"]).await;
     assert!(n[0].contains("no computer called laptop"), "{n:?}");
+}
+
+#[tokio::test]
+async fn each_display_streams_separately_and_clicks_land_on_the_right_one() {
+    let host_dev = device();
+    let client_dev = device();
+    let plain = pair_with_grant(&host_dev, &client_dev, None).await; // view only
+    let (media_host, started, stopped) = with_media(&plain);
+    let fake = FakeInput::default();
+    let host = Arc::new(HostConfig {
+        identity: media_host.identity.clone(),
+        trust: media_host.trust.clone(),
+        pairing: media_host.pairing.clone(),
+        device_name: media_host.device_name.clone(),
+        media: media_host.media.clone(),
+        input: Some(Arc::new(fake.clone())),
+        wake: None,
+    });
+    let (host_session, mut client) = open_session(&host, &client_dev).await;
+    let h = host.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+
+    // The list comes from the provider, with positions.
+    let list = client.list_displays().await.unwrap();
+    assert_eq!(list, fake_displays());
+
+    // Two displays stream at once; a second offer for one replaces only that stream.
+    assert_eq!(
+        client.request_display_video(1, "a".into()).await.unwrap(),
+        "answer-1-for:a"
+    );
+    assert_eq!(
+        client.request_display_video(2, "b".into()).await.unwrap(),
+        "answer-2-for:b"
+    );
+    assert_eq!(
+        (
+            started.load(Ordering::SeqCst),
+            stopped.load(Ordering::SeqCst)
+        ),
+        (2, 0)
+    );
+    client.request_display_video(1, "c".into()).await.unwrap();
+    assert_eq!(
+        (
+            started.load(Ordering::SeqCst),
+            stopped.load(Ordering::SeqCst)
+        ),
+        (3, 1)
+    );
+    let err = client
+        .request_display_video(9, "x".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SessionError::Signal(m) if m.contains("no display 9")));
+
+    // Pointer moves are turned into desktop coordinates for the display they were aimed at.
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.with(Permission::Input))
+        .unwrap();
+    client.ping(1).await.unwrap();
+    let on = |display, x, y| InputEvent::MouseMoveOn { display, x, y };
+    client.send_input(on(2, 65535, 0)).await.unwrap(); // far right, top of display 2
+    client.send_input(on(3, 0, 65535)).await.unwrap(); // far left, bottom of display 3
+    client.send_input(on(1, 32768, 32768)).await.unwrap(); // middle of the primary
+    client.send_input(on(9, 0, 0)).await.unwrap(); // no such display
+    client.ping(2).await.unwrap();
+    assert_eq!(
+        *fake.applied.lock().unwrap(),
+        vec![
+            InputEvent::MouseMoveAt {
+                x: 1920 + 1279,
+                y: 0
+            },
+            InputEvent::MouseMoveAt {
+                x: -1000,
+                y: 100 + 499
+            },
+            InputEvent::MouseMoveAt { x: 960, y: 540 },
+        ]
+    );
+    let notices = client.take_notices();
+    assert!(
+        notices.iter().any(|n| n.contains("no display 9")),
+        "{notices:?}"
+    );
+
+    // Taking `view` away closes every display stream, with no reconnect.
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.without(Permission::View))
+        .unwrap();
+    client.ping(3).await.unwrap();
+    wait_until("all display streams to close", || {
+        stopped.load(Ordering::SeqCst) >= 3
+    })
+    .await;
+    let denied = client.list_displays().await.unwrap();
+    assert!(denied.is_empty());
+    assert!(client.take_notices().iter().any(|n| n.contains("`view`")));
+
+    client.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
 }

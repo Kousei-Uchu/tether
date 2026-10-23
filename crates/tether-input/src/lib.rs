@@ -139,6 +139,12 @@ fn apply(
                 .move_mouse(px as i32, py as i32, Coordinate::Abs)
                 .map_err(e)
         }
+        // A position in the combined desktop, already worked out by the session from the
+        // display the viewer pointed at.
+        InputEvent::MouseMoveAt { x, y } => enigo.move_mouse(x, y, Coordinate::Abs).map_err(e),
+        InputEvent::MouseMoveOn { .. } => {
+            Err("the pointer position was not resolved to a display".to_owned())
+        }
         InputEvent::MouseDelta { dx, dy } => enigo
             .move_mouse(i32::from(dx), i32::from(dy), Coordinate::Rel)
             .map_err(e),
@@ -328,6 +334,19 @@ mod tests {
         let (x, y) = reader.location().unwrap();
         assert!((x - w / 2).abs() <= 2, "x {x} not near {}", w / 2);
         assert!((y - h / 4).abs() <= 2, "y {y} not near {}", h / 4);
+
+        sink.apply(InputEvent::MouseMoveAt { x: 123, y: 45 })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let (ax, ay) = reader.location().unwrap();
+        assert!(
+            (ax - 123).abs() <= 2 && (ay - 45).abs() <= 2,
+            "at {ax},{ay}"
+        );
+        sink.apply(InputEvent::MouseMove { x: 32768, y: 16384 })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let (x, y) = reader.location().unwrap();
 
         sink.apply(InputEvent::MouseDelta { dx: 10, dy: 20 })
             .unwrap();

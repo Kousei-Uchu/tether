@@ -21,6 +21,9 @@ pub struct DisplayInfo {
     pub name: String,
     pub width: u32,
     pub height: u32,
+    /// Top left corner in the combined desktop.
+    pub x: i32,
+    pub y: i32,
     pub primary: bool,
 }
 
@@ -36,6 +39,8 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>, String> {
                 .unwrap_or_else(|_| "display".to_owned()),
             width: m.width().map_err(|e| e.to_string())?,
             height: m.height().map_err(|e| e.to_string())?,
+            x: m.x().map_err(|e| e.to_string())?,
+            y: m.y().map_err(|e| e.to_string())?,
             primary: m.is_primary().unwrap_or(false),
         });
     }
