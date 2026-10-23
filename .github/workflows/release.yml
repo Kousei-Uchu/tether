@@ -1,0 +1,67 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, name: windows-x64 }
+          - { os: macos-latest, name: macos-arm64 }
+          - { os: macos-13, name: macos-x64 }
+          - { os: ubuntu-latest, name: linux-x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y nasm libxdo-dev libx11-dev libxtst-dev
+      - name: Desktop app (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/build-desktop.ps1
+      - name: Desktop app (macOS, Linux)
+        if: runner.os != 'Windows'
+        run: scripts/build-desktop.sh
+      - name: Command line tool (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/build-cli.ps1
+      - name: Command line tool (macOS, Linux)
+        if: runner.os != 'Windows'
+        run: scripts/build-cli.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tether-${{ matrix.name }}
+          path: |
+            dist/tether-*
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.zip
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.AppImage
+            apps/desktop/dist/*.deb
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**

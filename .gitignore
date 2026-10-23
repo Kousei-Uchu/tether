@@ -13,3 +13,4 @@ apps/ios/Tether/Info.plist
 build/
 *.pyc
 __pycache__/
+apps/desktop/native/

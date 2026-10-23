@@ -8,13 +8,57 @@
     "prestart": "node ../../crates/tether-node/scripts/build.mjs",
     "start": "electron .",
     "smoke": "node ../../crates/tether-node/scripts/build.mjs && electron . --smoke",
-    "e2e": "node ../../crates/tether-node/scripts/build.mjs && electron test/e2e.js"
+    "e2e": "node ../../crates/tether-node/scripts/build.mjs && electron test/e2e.js",
+    "stage": "node scripts/stage-native.mjs",
+    "dist": "node scripts/stage-native.mjs && electron-builder",
+    "dist:dir": "node scripts/stage-native.mjs && electron-builder --dir"
   },
   "devDependencies": {
     "electron": "^44.0.0",
-    "jsqr": "^1.4.0"
+    "jsqr": "^1.4.0",
+    "electron-builder": "^26.0.0"
   },
   "dependencies": {
     "qrcode": "^1.5.4"
+  },
+  "author": "Kousei-Uchu <kousei-uchu@users.noreply.github.com>",
+  "homepage": "https://github.com/Kousei-Uchu/tether",
+  "build": {
+    "appId": "dev.kousei.tether",
+    "productName": "Tether",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "native/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "native/**"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities",
+      "identity": null
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility"
+    }
   }
 }

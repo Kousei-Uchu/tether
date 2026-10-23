@@ -183,6 +183,19 @@ Inside: `identity.json` (this device's private key, keep it secret) and `trusted
 
 Details and known limits are in section 5 of the spec.
 
+## Packaging
+
+Each script builds for the machine it runs on, because the Rust parts are native code. The release workflow (`.github/workflows/release.yml`) runs them on Windows, macOS (Apple Silicon and Intel) and Linux, from the Actions tab or by pushing a tag like `v0.1.0`, which also attaches the files to a GitHub release.
+
+| Script | Produces |
+| --- | --- |
+| `scripts/build-desktop.sh` | macOS: `.dmg`, `.zip`. Linux: `.AppImage`, `.deb`. In `apps/desktop/dist/` |
+| `scripts/build-desktop.ps1` | Windows: installer `.exe`, `.zip`. In `apps\desktop\dist\` |
+| `scripts/build-cli.sh`, `scripts/build-cli.ps1` | the `tether` command, in `dist/` |
+| `scripts/build-ios.sh` | the iPhone library (`TetherFFI.xcframework`), Mac only |
+
+Builds are unsigned for now, so macOS and Windows will warn on first launch. Signing needs certificates and is a later step.
+
 ## Applying later steps
 
 Each following step arrives as a patch file made against the previous step. From the

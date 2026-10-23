@@ -3,7 +3,13 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const QRCode = require('qrcode');
-const { Device, pairingLink, parsePairingLink } = require('../../crates/tether-node');
+const fs = require('node:fs');
+// Packaged builds carry the bridge in ./native (see scripts/stage-native.mjs); a source
+// checkout loads it straight from the workspace.
+const bridgePath = fs.existsSync(path.join(__dirname, 'native', 'tether.node'))
+  ? './native'
+  : '../../crates/tether-node';
+const { Device, pairingLink, parsePairingLink } = require(bridgePath);
 
 const smoke = process.argv.includes('--smoke');
 const PERMISSIONS = ['view', 'input', 'media', 'power', 'files'];
