@@ -143,6 +143,16 @@ To serve the test video from the terminal too, add `--video test-pattern` to `li
 
 Set `RUST_LOG=debug` for more detail.
 
+## Running in the background
+
+```
+tether service install --video screen --input   # start at login, keep it running
+tether service status
+tether service uninstall
+```
+
+`--dry-run` prints what would be installed. It is a per user service on every platform, because screen capture and input need your desktop session: a systemd user unit on Linux, a launch agent on macOS (log in `~/Library/Logs/tether.log`), and a logon task named Tether on Windows. Pair devices first with `tether listen --pair` or the desktop app, since a background host does not show pairing codes. On Linux, run `install` from your desktop session so the display is passed on. Install again to change the options.
+
 ## Permissions
 
 Each paired device has its own permissions on the host it connects to: `view`, `input`,

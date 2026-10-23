@@ -19,6 +19,8 @@ use tokio::{
     sync::Semaphore,
 };
 
+mod service;
+
 #[derive(Parser)]
 #[command(
     name = "tether",
@@ -40,6 +42,11 @@ struct Cli {
 enum Cmd {
     /// Show this device's name, fingerprint and storage location.
     Id,
+    /// Run `listen` in the background, started at login.
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
     /// List the displays that can be shared with `listen --video screen:<id>`.
     Displays,
     /// Accept connections from paired devices.
@@ -105,6 +112,31 @@ enum PeersCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Set up (or update) the background host and start it.
+    Install {
+        #[arg(long, default_value = "0.0.0.0:7420")]
+        bind: String,
+        /// What to share: `screen`, `screen:<id>` or `test-pattern`.
+        #[arg(long)]
+        video: Option<tether_media::VideoSpec>,
+        /// Allow remote control of this computer's mouse and keyboard.
+        #[arg(long)]
+        input: bool,
+        /// Write the definition but do not start it now.
+        #[arg(long)]
+        no_start: bool,
+        /// Only print what would be installed.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Stop and remove it.
+    Uninstall,
+    /// Show whether it is running.
+    Status,
+}
+
 struct Ctx {
     paths: Paths,
     identity: Identity,
@@ -132,6 +164,8 @@ async fn run() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let home_override = cli.home.clone();
+    let name_override = cli.name.clone();
     let paths = Paths::resolve(cli.home).context("could not prepare the data directory")?;
     let identity = Identity::load_or_create(&paths.identity_file())
         .context("could not load or create this device's identity")?;
@@ -145,6 +179,35 @@ async fn run() -> Result<()> {
     match cli.cmd {
         Cmd::Id => show_id(&ctx),
         Cmd::Displays => show_displays(),
+        Cmd::Service { action } => match action {
+            ServiceAction::Install {
+                bind,
+                video,
+                input,
+                no_start,
+                dry_run,
+            } => {
+                let spec = service::Spec {
+                    exe: std::env::current_exe().context("could not find this program")?,
+                    home: home_override,
+                    name: name_override,
+                    bind,
+                    video: video.map(|v| match v {
+                        tether_media::VideoSpec::TestPattern => "test-pattern".to_owned(),
+                        tether_media::VideoSpec::Screen(None) => "screen".to_owned(),
+                        tether_media::VideoSpec::Screen(Some(id)) => format!("screen:{id}"),
+                    }),
+                    input,
+                };
+                if dry_run {
+                    service::show(&spec)
+                } else {
+                    service::install(&spec, !no_start)
+                }
+            }
+            ServiceAction::Uninstall => service::uninstall(),
+            ServiceAction::Status => service::status(),
+        },
         Cmd::Listen {
             bind,
             pair,

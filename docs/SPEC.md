@@ -285,7 +285,7 @@ when the host revokes `view`. Met with the test pattern.
 - [ ] macOS capture (ScreenCaptureKit), hardware encode (VideoToolbox)
 - [x] Choose the display (`tether displays`, `--video screen:<id>`, dropdown in the app)
 - [ ] One video track per display
-- [ ] Host agent as a background service skeleton (Windows service, macOS launch agent)
+- [x] Host as a background service: `tether service install|uninstall|status` (systemd user unit, macOS launch agent, Windows logon task; per user because capture needs the desktop session). Definitions unit tested; only the Linux file writing was run for real, and not against a live systemd
 
 Acceptance: the Mac sees the PC's screen and the PC sees the Mac's, at 30 fps on a LAN.
 
