@@ -209,6 +209,38 @@ pub struct ClipboardReply {
     pub notice: Option<String>,
 }
 
+/// Records any Rust panic, with a backtrace, in `crash.log` in the data directory. The
+/// default hook only prints to stderr, which nobody sees in a packaged app. Installed once.
+fn install_crash_log(dir: &std::path::Path) {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    let file = dir.join("crash.log");
+    ONCE.call_once(move || {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let trace = std::backtrace::Backtrace::force_capture();
+            let thread = std::thread::current();
+            let line = format!(
+                "[{:?}] panic on thread {:?}: {info}\n{trace}\n\n",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                thread.name().unwrap_or("unnamed"),
+            );
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file)
+            {
+                use std::io::Write;
+                let _ = f.write_all(line.as_bytes());
+            }
+            previous(info);
+        }));
+    });
+}
+
 /// This machine's identity and trust store.
 #[napi]
 pub struct Device {
@@ -223,6 +255,7 @@ impl Device {
     #[napi(constructor)]
     pub fn new(home: Option<String>, name: Option<String>) -> Result<Self> {
         let paths = Paths::resolve(home.map(PathBuf::from)).map_err(err)?;
+        install_crash_log(&paths.dir);
         let identity = Identity::load_or_create(&paths.identity_file()).map_err(err)?;
         Ok(Self {
             paths,
@@ -244,6 +277,12 @@ impl Device {
     #[napi(getter)]
     pub fn home(&self) -> String {
         self.paths.dir.display().to_string()
+    }
+
+    /// Where Rust panics are written. Look here first after a crash.
+    #[napi(getter)]
+    pub fn crash_log(&self) -> String {
+        self.paths.dir.join("crash.log").display().to_string()
     }
 
     fn store(&self) -> Result<TrustStore> {

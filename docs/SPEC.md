@@ -309,6 +309,13 @@ Acceptance: a device with `input` controls the host's pointer and keyboard from 
 loses control the moment the permission is revoked. Met on X11. Still to confirm on Windows
 and macOS, which also needs the macOS Accessibility permission.
 
+macOS hardening (step 17): on macOS every printable key is sent as a fixed ANSI virtual key
+code (`mac_keycode`), because enigo's character path calls the Text Input Source APIs, which
+macOS requires on the main thread and aborts (SIGABRT) off it. The injector also catches
+panics, and the Node bridge writes Rust panics with a backtrace to `crash.log` in the data
+directory (`Device.crashLog`). A native abort bypasses that log: look in
+`~/Library/Logs/DiagnosticReports` for the `.ips` report.
+
 Input to pixel latency has not been measured yet, because there is no real screen to look at
 until M3c.
 
@@ -395,6 +402,7 @@ phone, with controls following permission changes live.
 | D-20 | Pairing link carries address, code and an optional name, and no extra trust | The code is what authenticates pairing. The link only saves typing, so a tampered link can only fail to pair | Accepted |
 | D-21 | The phone is a controller only for now, and disconnects when backgrounded | iOS suspends sockets in the background, so a clean disconnect beats a dead session. Viewing needs screen capture first | Accepted |
 | D-22 | Clipboard sharing is pull and push by hand, with its own host switch on top of `files` | A clipboard often holds passwords, so reading it needs two opt-ins, like remote control (D-16). Automatic sync would leak whatever is copied next, and needs echo-loop handling, so it waits | Accepted |
+| D-23 | macOS keys are sent as raw virtual key codes, never looked up by character | The layout lookup is main-thread only and aborts the process elsewhere. Physical positions are also what the protocol means | Accepted |
 
 ## 8. Open questions
 
@@ -408,6 +416,7 @@ phone, with controls following permission changes live.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-25 | Step 17: macOS crash hardening (raw key codes, panic guard, crash log) |
 | 2026-10-23 | M8a: clipboard text sync, by hand, both directions. Protocol version 5 |
 | 2026-10-23 | M3c started: software screen capture and display choice (Linux verified). Packaging scripts and release workflow for all platforms |
 | 2026-10-19 | M1 complete: protocol, identity, pairing, secure channel, CLI, tests, CI |

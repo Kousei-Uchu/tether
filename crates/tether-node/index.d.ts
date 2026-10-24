@@ -47,6 +47,8 @@ export class Device {
   readonly name: string;
   readonly fingerprint: string;
   readonly home: string;
+  /** Where Rust panics are written; look here first after a crash. */
+  readonly crashLog: string;
   peers(): PeerSummary[];
   grant(query: string, permissions: string[]): PeerSummary[];
   revoke(query: string, permissions: string[]): PeerSummary[];

@@ -97,7 +97,12 @@ fn run(
     let mut held_buttons: HashSet<MouseButton> = HashSet::new();
 
     while let Ok(event) = rx.recv() {
-        if let Err(reason) = apply(&mut enigo, &mut held_keys, &mut held_buttons, event) {
+        // A panic in an OS call must not take the whole app down, or leave keys held.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            apply(&mut enigo, &mut held_keys, &mut held_buttons, event)
+        }))
+        .unwrap_or_else(|_| Err("the operating system rejected that input".to_owned()));
+        if let Err(reason) = outcome {
             tracing::debug!("input failed: {reason}");
             *last_error.lock().expect("lock") = Some(reason);
         }
@@ -210,6 +215,14 @@ fn to_button(b: MouseButton) -> Button {
 /// as the character that key makes on a US layout, so on a different host layout the result
 /// follows that layout's rules. Use `Text` events to type exact characters.
 pub fn to_enigo(key: Key) -> Option<EKey> {
+    // On macOS, enigo turns a character into a key code by asking the Text Input Source APIs
+    // for the current layout. Those APIs must run on the main thread, and macOS aborts the
+    // process (SIGABRT) when they do not. Our injector runs on its own thread, so on macOS
+    // every printable key is sent as a fixed virtual key code instead, which asks nothing.
+    #[cfg(target_os = "macos")]
+    if let Some(code) = mac_keycode(key) {
+        return Some(EKey::Other(u32::from(code)));
+    }
     let code = key.dom_code();
     if let Some(letter) = code.strip_prefix("Key").filter(|r| r.len() == 1) {
         return letter
@@ -278,6 +291,72 @@ pub fn to_enigo(key: Key) -> Option<EKey> {
     })
 }
 
+/// The macOS virtual key code (ANSI layout, from Carbon's `Events.h`) for a printable key.
+/// These name physical positions, which is what the protocol's keys are.
+pub fn mac_keycode(key: Key) -> Option<u16> {
+    let code = key.dom_code();
+    if let Some(letter) = code.strip_prefix("Key").filter(|r| r.len() == 1) {
+        return match letter.chars().next()? {
+            'A' => Some(0x00),
+            'S' => Some(0x01),
+            'D' => Some(0x02),
+            'F' => Some(0x03),
+            'H' => Some(0x04),
+            'G' => Some(0x05),
+            'Z' => Some(0x06),
+            'X' => Some(0x07),
+            'C' => Some(0x08),
+            'V' => Some(0x09),
+            'B' => Some(0x0B),
+            'Q' => Some(0x0C),
+            'W' => Some(0x0D),
+            'E' => Some(0x0E),
+            'R' => Some(0x0F),
+            'Y' => Some(0x10),
+            'T' => Some(0x11),
+            'O' => Some(0x1F),
+            'U' => Some(0x20),
+            'I' => Some(0x22),
+            'P' => Some(0x23),
+            'L' => Some(0x25),
+            'J' => Some(0x26),
+            'K' => Some(0x28),
+            'N' => Some(0x2D),
+            'M' => Some(0x2E),
+            _ => None,
+        };
+    }
+    if let Some(digit) = code.strip_prefix("Digit").filter(|r| r.len() == 1) {
+        return match digit.chars().next()? {
+            '1' => Some(0x12),
+            '2' => Some(0x13),
+            '3' => Some(0x14),
+            '4' => Some(0x15),
+            '5' => Some(0x17),
+            '6' => Some(0x16),
+            '7' => Some(0x1A),
+            '8' => Some(0x1C),
+            '9' => Some(0x19),
+            '0' => Some(0x1D),
+            _ => None,
+        };
+    }
+    Some(match key {
+        Key::Equal => 0x18,
+        Key::Minus => 0x1B,
+        Key::BracketRight => 0x1E,
+        Key::BracketLeft => 0x21,
+        Key::Quote => 0x27,
+        Key::Semicolon => 0x29,
+        Key::Backslash => 0x2A,
+        Key::Comma => 0x2B,
+        Key::Slash => 0x2C,
+        Key::Period => 0x2F,
+        Key::Backquote => 0x32,
+        _ => return None,
+    })
+}
+
 /// macOS keyboards have no Insert key, so enigo does not define it there.
 fn insert_key() -> Option<EKey> {
     #[cfg(not(target_os = "macos"))]
@@ -306,6 +385,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn mac_keycodes_cover_every_printable_key_without_repeats() {
+        let mut seen = std::collections::HashSet::new();
+        let mut printable = 0;
+        for key in Key::ALL {
+            let code = key.dom_code();
+            let is_printable = code.starts_with("Key")
+                || code.starts_with("Digit")
+                || matches!(
+                    code,
+                    "Minus"
+                        | "Equal"
+                        | "BracketLeft"
+                        | "BracketRight"
+                        | "Backslash"
+                        | "Semicolon"
+                        | "Quote"
+                        | "Backquote"
+                        | "Comma"
+                        | "Period"
+                        | "Slash"
+                );
+            if is_printable {
+                printable += 1;
+                let k = mac_keycode(*key).unwrap_or_else(|| panic!("{code} has no mac code"));
+                assert!(seen.insert(k), "{code} reuses code {k:#x}");
+            } else {
+                assert!(mac_keycode(*key).is_none(), "{code} should not be here");
+            }
+        }
+        assert_eq!(printable, 26 + 10 + 11);
+    }
+
+    #[test]
+    fn known_mac_keycodes() {
+        assert_eq!(mac_keycode(Key::A), Some(0));
+        assert_eq!(mac_keycode(Key::Z), Some(6));
+        assert_eq!(mac_keycode(Key::D1), Some(0x12));
+        assert_eq!(mac_keycode(Key::Slash), Some(0x2C));
+    }
+
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn letters_and_digits_become_their_characters() {
         assert!(matches!(to_enigo(Key::A), Some(EKey::Unicode('a'))));
