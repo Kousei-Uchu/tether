@@ -13,13 +13,13 @@
   </head>
   <body class="viewer">
     <div class="bar">
-      <label class="check">
-        <input id="control" type="checkbox" />
-        Control this screen
+      <label class="inline-switch">
+        <input id="control" type="checkbox" class="switch" />
+        <span>Control this screen</span>
       </label>
-      <label id="mute-label" class="check" hidden>
-        <input id="mute" type="checkbox" />
-        Mute
+      <label id="mute-label" class="inline-switch" hidden>
+        <input id="mute" type="checkbox" class="switch" />
+        <span>Mute</span>
       </label>
       <span id="msg" class="msg" role="status">Asking for the screen...</span>
     </div>

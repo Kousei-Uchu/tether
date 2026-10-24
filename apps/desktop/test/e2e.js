@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const clientHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tether-e2e-client-'));
 const hostHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tether-e2e-host-'));
+app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'tether-e2e-profile-')));
 process.env.TETHER_HOME = clientHome;
 require('../main.js');
 

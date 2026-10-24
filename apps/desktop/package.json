@@ -11,7 +11,8 @@
     "e2e": "node ../../crates/tether-node/scripts/build.mjs && electron test/e2e.js",
     "stage": "node scripts/stage-native.mjs",
     "dist": "node scripts/stage-native.mjs && electron-builder",
-    "dist:dir": "node scripts/stage-native.mjs && electron-builder --dir"
+    "dist:dir": "node scripts/stage-native.mjs && electron-builder --dir",
+    "shots": "node ../../crates/tether-node/scripts/build.mjs && electron test/shots.js"
   },
   "devDependencies": {
     "electron": "^44.0.0",
@@ -34,7 +35,8 @@
       "preload.js",
       "renderer/**",
       "native/**",
-      "package.json"
+      "package.json",
+      "build/icon.png"
     ],
     "asarUnpack": [
       "native/**"

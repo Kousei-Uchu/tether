@@ -38,39 +38,61 @@ struct PairView: View {
 
     private var scanner: some View {
         VStack(spacing: 12) {
-            QRScannerView { text in
-                isPresented = false
-                Task { await model.pair(fromLink: text) }
-            } onFailure: { message in
-                scanError = message
+            ZStack {
+                QRScannerView { text in
+                    isPresented = false
+                    Task { @MainActor in
+                        Haptics.success()
+                        await model.pair(fromLink: text)
+                    }
+                } onFailure: { message in
+                    scanError = message
+                }
+                // A frame to aim with, so it is clear where the code goes.
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .strokeBorder(.white.opacity(0.9), lineWidth: 3)
+                    .frame(width: 230, height: 230)
+                    .allowsHitTesting(false)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             .padding(.horizontal)
 
             if let scanError {
-                Text(scanError).foregroundStyle(.red).padding(.horizontal)
+                Label(scanError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
             } else {
-                Text("On the computer, start accepting connections and point the camera at the QR code.")
+                Text("On the computer, open This computer and start sharing, then point the camera at the QR code.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
             }
         }
     }
 
     private var form: some View {
         Form {
-            Section("Computer") {
+            Section {
                 TextField("Address, for example 192.168.1.20", text: $address)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
+            } header: {
+                Text("Computer")
+            } footer: {
+                Text("The computer's address on your network, for example 192.168.1.20, or its Tailscale name.")
             }
-            Section("Pairing code") {
+            Section {
                 TextField("XXXX-XXXX-XXXX-XXXX", text: $code)
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
                     .font(.system(.body, design: .monospaced))
+            } header: {
+                Text("Pairing code")
+            } footer: {
+                Text("You can also paste a pairing link here.")
             }
             Section {
                 Button("Pair") {

@@ -1,5 +1,5 @@
 // Electron main process. Owns the Rust bridge; the renderer never touches it directly.
-const { app, BrowserWindow, ipcMain, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, nativeTheme } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const QRCode = require('qrcode');
@@ -323,12 +323,19 @@ function hostState() {
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 980,
-    height: 760,
-    minWidth: 720,
-    minHeight: 560,
+    width: 1080,
+    height: 780,
+    minWidth: 860,
+    minHeight: 600,
     title: 'Tether',
-    show: !smoke,
+    icon: path.join(__dirname, 'build', 'icon.png'),
+    // Match the page so there is no white flash while it loads.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#14161a' : '#f4f5f7',
+    // macOS: let the sidebar run under the title bar, with the usual window buttons.
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 17 } }
+      : {}),
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -340,6 +347,10 @@ function createWindow() {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // Show once there is something to see. The smoke test keeps the window hidden.
+  win.once('ready-to-show', () => {
+    if (!smoke) win.show();
+  });
 
   if (smoke) {
     win.webContents.once('did-finish-load', async () => {
@@ -356,6 +367,9 @@ function createWindow() {
     });
   }
 }
+
+app.setName('Tether');
+if (process.platform === 'win32') app.setAppUserModelId('dev.kousei.tether');
 
 app.whenReady().then(() => {
   device = new Device(process.env.TETHER_HOME || null, null);

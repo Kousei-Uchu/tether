@@ -9,6 +9,7 @@ struct TetherApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(model)
+                .tint(Theme.accent)
         }
         .onChange(of: scenePhase) { _, phase in
             // iOS suspends network connections in the background, so end the session

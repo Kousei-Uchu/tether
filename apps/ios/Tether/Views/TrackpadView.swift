@@ -18,7 +18,9 @@ struct TrackpadView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = UIColor.secondarySystemBackground
-        view.layer.cornerRadius = 14
+        view.layer.cornerRadius = 22
+        view.layer.cornerCurve = .continuous
+        view.layer.borderWidth = 1
         view.isMultipleTouchEnabled = true
 
         let c = context.coordinator
@@ -53,6 +55,8 @@ struct TrackpadView: UIViewRepresentable {
 
     func updateUIView(_ view: UIView, context: Context) {
         context.coordinator.model = model
+        // A layer's colour does not follow light and dark mode by itself.
+        view.layer.borderColor = UIColor.separator.resolvedColor(with: view.traitCollection).cgColor
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
@@ -101,7 +105,10 @@ struct TrackpadView: UIViewRepresentable {
             case .began:
                 dragging = true
                 lastHold = p
-                Task { @MainActor in self.model.buttonDown("left") }
+                Task { @MainActor in
+                    Haptics.click()
+                    self.model.buttonDown("left")
+                }
             case .changed:
                 move(CGPoint(x: p.x - lastHold.x, y: p.y - lastHold.y))
                 lastHold = p
@@ -126,7 +133,18 @@ struct TrackpadView: UIViewRepresentable {
             if lines != 0 { Task { @MainActor in self.model.scroll(lines: lines) } }
         }
 
-        @objc func tap() { Task { @MainActor in self.model.click("left") } }
-        @objc func twoFingerTap() { Task { @MainActor in self.model.click("right") } }
+        @objc func tap() {
+            Task { @MainActor in
+                Haptics.click()
+                self.model.click("left")
+            }
+        }
+
+        @objc func twoFingerTap() {
+            Task { @MainActor in
+                Haptics.click()
+                self.model.click("right")
+            }
+        }
     }
 }

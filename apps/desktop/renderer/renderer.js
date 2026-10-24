@@ -32,6 +32,103 @@ async function guarded(msgId, fn) {
   }
 }
 
+if (navigator.userAgent.includes('Macintosh')) document.body.classList.add('mac');
+
+// ----- navigation -----
+let currentView = 'computers';
+
+function showView(name) {
+  for (const section of document.querySelectorAll('.view')) {
+    const id = section.id === 'connection' ? 'session' : section.id.replace('view-', '');
+    section.classList.toggle('active', id === name);
+  }
+  for (const item of document.querySelectorAll('.nav-item')) {
+    const on = item.dataset.view === name;
+    item.classList.toggle('active', on);
+    if (on) item.setAttribute('aria-current', 'page');
+    else item.removeAttribute('aria-current');
+  }
+  currentView = name;
+}
+
+for (const item of document.querySelectorAll('.nav-item')) {
+  item.addEventListener('click', () => showView(item.dataset.view));
+}
+
+let wasConnected = false;
+function syncSession(state) {
+  $('nav-session').hidden = !state.connected;
+  if (state.connected) $('nav-session-name').textContent = state.peer.name;
+  if (state.connected && !wasConnected) showView('session');
+  if (!state.connected && wasConnected && currentView === 'session') showView('computers');
+  wasConnected = state.connected;
+}
+
+// ----- computers this one has connected to -----
+// Only names and addresses are kept here, to save typing; trust lives in the Rust side.
+const COMPUTERS_KEY = 'tether.computers';
+
+function loadComputers() {
+  try {
+    const list = JSON.parse(localStorage.getItem(COMPUTERS_KEY) ?? '[]');
+    return Array.isArray(list)
+      ? list.filter((c) => c && typeof c.name === 'string' && typeof c.address === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveComputers(list) {
+  try {
+    localStorage.setItem(COMPUTERS_KEY, JSON.stringify(list.slice(0, 30)));
+  } catch {
+    // storage can be unavailable; the list just will not be remembered
+  }
+}
+
+function rememberComputer({ name, platform, fingerprint, address }) {
+  if (!name || !address) return;
+  const list = loadComputers().filter((c) => !(fingerprint && c.fingerprint === fingerprint) && c.address !== address);
+  list.unshift({ name, platform: platform ?? '', fingerprint: fingerprint ?? '', address, lastUsed: Date.now() });
+  saveComputers(list);
+  renderComputers();
+}
+
+function renderComputers() {
+  const list = loadComputers();
+  $('welcome').hidden = list.length > 0;
+  const box = $('computers');
+  box.hidden = list.length === 0;
+  box.replaceChildren(
+    ...(list.length ? [el('div', { className: 'computers-title', textContent: 'Your computers' })] : []),
+    ...list.map((c) => {
+      const connect = el('button', { className: 'primary', textContent: 'Connect' });
+      connect.addEventListener('click', () => {
+        $('address').value = c.address;
+        $('connect-btn').click();
+      });
+      const forget = el('button', { textContent: 'Forget', title: 'Remove from this list. The pairing stays; unpair it under This computer.' });
+      forget.addEventListener('click', () => {
+        saveComputers(loadComputers().filter((x) => x.address !== c.address));
+        renderComputers();
+      });
+      return el(
+        'div',
+        { className: 'computer' },
+        el('div', { className: 'avatar', textContent: (c.name.trim()[0] ?? '?').toUpperCase(), ariaHidden: 'true' }),
+        el(
+          'div',
+          { className: 'computer-text' },
+          el('div', { className: 'computer-name', textContent: c.name }),
+          el('div', { className: 'computer-sub', textContent: [c.platform, c.address].filter(Boolean).join(' \u00b7 ') }),
+        ),
+        el('div', { className: 'computer-actions' }, forget, connect),
+      );
+    }),
+  );
+}
+
 // ----- this device -----
 async function loadIdentity() {
   const info = await window.tether.deviceInfo();
@@ -301,6 +398,7 @@ $('clip-get').addEventListener('click', (e) =>
 let pollTimer = null;
 
 function showConnection(state) {
+  syncSession(state);
   const box = $('connection');
   box.hidden = !state.connected;
   mayViewNow = state.connected && state.permissions.includes('view');
@@ -311,6 +409,8 @@ function showConnection(state) {
   $('wake-row').hidden = !(state.connected && state.permissions.includes('power'));
   $('media-row').hidden = !mayMedia;
   $('media-msg').hidden = !mayMedia;
+  $('media-tool').hidden = !mayMedia;
+  $('wake-tool').hidden = $('wake-row').hidden;
   $('control').disabled = !mayControlNow;
   if (!mayControlNow && $('control').checked) setControl(false);
   if (!state.connected) {
@@ -369,6 +469,7 @@ $('pair-btn').addEventListener('click', () =>
     const code = $('code').value.trim();
     if (!address || !code) throw new Error('Enter the address and the pairing code.');
     const peer = await window.tether.pair(address, code);
+    rememberComputer({ name: peer.name, platform: peer.platform, fingerprint: peer.fingerprint, address });
     $('code').value = '';
     say('connect-msg', `Paired with ${peer.name}. You can connect now.`);
     await renderPeers();
@@ -380,6 +481,9 @@ $('connect-btn').addEventListener('click', () =>
     const address = $('address').value.trim();
     if (!address) throw new Error('Enter the address of the device.');
     const state = await window.tether.connect(address);
+    if (state.connected) {
+      rememberComputer({ name: state.peer.name, platform: state.peer.platform, fingerprint: state.peer.fingerprint, address });
+    }
     showConnection(state);
     startPolling();
   }),
@@ -407,6 +511,7 @@ function chosenGrant() {
 }
 
 function showHost(state) {
+  $('nav-host-dot').hidden = !state.running;
   $('host-form').hidden = state.running;
   $('host-running').hidden = !state.running;
   if (!state.running) return;
@@ -451,14 +556,59 @@ $('code').addEventListener('input', async (e) => {
 
 $('video').addEventListener('change', (e) => {
   $('share-audio').disabled = !e.target.checked;
+  $('video-source').disabled = !e.target.checked;
 });
 
 $('pairing').addEventListener('change', (e) => {
   $('grant-set').disabled = !e.target.checked;
 });
 
+// What was chosen last time is remembered, so starting again is one click.
+const HOST_KEY = 'tether.host';
+
+function hostSettings() {
+  return {
+    bind: $('bind').value.trim(),
+    pairing: $('pairing').checked,
+    video: $('video').checked,
+    source: $('video-source').value,
+    audio: $('share-audio').checked,
+    input: $('allow-input').checked,
+    clipboard: $('allow-clipboard').checked,
+    wake: $('wake-targets').value,
+    grant: chosenGrant(),
+  };
+}
+
+function restoreHostSettings() {
+  let saved;
+  try {
+    saved = JSON.parse(localStorage.getItem(HOST_KEY) ?? 'null');
+  } catch {
+    saved = null;
+  }
+  if (!saved || typeof saved !== 'object') return;
+  if (typeof saved.bind === 'string' && saved.bind) $('bind').value = saved.bind;
+  for (const [id, key] of [['pairing', 'pairing'], ['video', 'video'], ['share-audio', 'audio'], ['allow-input', 'input'], ['allow-clipboard', 'clipboard']]) {
+    if (typeof saved[key] === 'boolean') $(id).checked = saved[key];
+  }
+  if (typeof saved.wake === 'string') $('wake-targets').value = saved.wake;
+  if ([...$('video-source').options].some((o) => o.value === saved.source)) $('video-source').value = saved.source;
+  if (Array.isArray(saved.grant)) {
+    for (const box of $('grant-boxes').querySelectorAll('input')) box.checked = saved.grant.includes(box.value);
+  }
+  $('share-audio').disabled = !$('video').checked;
+  $('video-source').disabled = !$('video').checked;
+  $('grant-set').disabled = !$('pairing').checked;
+}
+
 $('host-start').addEventListener('click', () =>
   guarded('host-msg', async () => {
+    try {
+      localStorage.setItem(HOST_KEY, JSON.stringify(hostSettings()));
+    } catch {
+      // not remembered; sharing still starts
+    }
     const state = await window.tether.startHost({
       bind: $('bind').value.trim(),
       pairing: $('pairing').checked,
@@ -534,6 +684,8 @@ setInterval(async () => {
 
 (async () => {
   buildGrantBoxes();
+  renderComputers();
   await guarded('connect-msg', loadIdentity);
+  restoreHostSettings();
   await guarded('peers-msg', renderPeers);
 })();

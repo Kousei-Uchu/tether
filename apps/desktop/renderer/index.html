@@ -11,183 +11,297 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header class="top">
-      <h1>Tether</h1>
-      <div class="identity">
-        <span id="device-name">...</span>
-        <code id="device-fingerprint" title="This device's fingerprint"></code>
-      </div>
-    </header>
+    <svg class="sprite" aria-hidden="true" width="0" height="0" focusable="false">
+      <defs>
+        <linearGradient id="brand-grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#3fa68e" />
+          <stop offset="1" stop-color="#1c5547" />
+        </linearGradient>
+      </defs>
+      <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></symbol>
+      <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="10" rx="1.5" /><path d="M3 19h18" /></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" /></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2" /></symbol>
+      <symbol id="i-windows" viewBox="0 0 24 24"><rect x="3" y="5" width="11" height="9" rx="1.5" /><rect x="10" y="10" width="11" height="9" rx="1.5" /></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><circle cx="6.5" cy="12" r="3" /><circle cx="17.5" cy="12" r="3" /><path d="M9.5 12h5" /></symbol>
+    </svg>
 
-    <main>
-      <section class="card" aria-labelledby="connect-title">
-        <h2 id="connect-title">Connect to a device</h2>
-        <p class="hint">
-          The first time, pair with the code shown on the other device. After that, just connect.
-        </p>
-        <div class="row">
-          <label class="grow">
-            Address
-            <input id="address" type="text" placeholder="192.168.1.20 or my-pc:7420" spellcheck="false" />
-          </label>
-          <label class="grow">
-            Pairing code
-            <input id="code" type="text" placeholder="XXXX-XXXX-XXXX-XXXX, or paste a pairing link" spellcheck="false" autocomplete="off" />
-          </label>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+            <rect x="1" y="1" width="30" height="30" rx="8" fill="url(#brand-grad)" />
+            <circle cx="10.5" cy="16" r="3.6" class="logo-ring" />
+            <circle cx="21.5" cy="16" r="3.6" class="logo-ring" />
+            <path d="M14 16h4" class="logo-line" />
+          </svg>
+          <span class="brand-name">Tether</span>
         </div>
-        <div class="row actions">
-          <button id="pair-btn">Pair</button>
-          <button id="connect-btn" class="primary">Connect</button>
-        </div>
-        <p id="connect-msg" class="msg" role="status"></p>
 
-        <div id="connection" class="connection" hidden>
-          <div class="conn-head">
+        <nav class="nav" aria-label="Sections">
+          <button class="nav-item active" data-view="computers" aria-current="page">
+            <svg class="icon"><use href="#i-monitor" /></svg>
+            <span>Computers</span>
+          </button>
+          <button class="nav-item session-nav" id="nav-session" data-view="session" hidden>
+            <svg class="icon"><use href="#i-play" /></svg>
+            <span id="nav-session-name">Session</span>
+            <span class="dot live" aria-hidden="true"></span>
+          </button>
+          <button class="nav-item" data-view="host">
+            <svg class="icon"><use href="#i-laptop" /></svg>
+            <span>This computer</span>
+            <span id="nav-host-dot" class="dot live" aria-label="Sharing is on" hidden></span>
+          </button>
+        </nav>
+
+        <div class="me">
+          <div class="me-label">This device</div>
+          <div id="device-name" class="me-name">...</div>
+          <code id="device-fingerprint" class="me-fp" title="This device's fingerprint"></code>
+        </div>
+      </aside>
+
+      <main class="content">
+        <!-- ============================== Computers ============================== -->
+        <section id="view-computers" class="view active" aria-labelledby="computers-title">
+          <header class="page-head">
             <div>
-              <strong id="conn-name"></strong>
-              <span id="conn-platform" class="muted"></span>
-              <div><code id="conn-fingerprint"></code></div>
+              <h1 id="computers-title">Computers</h1>
+              <p class="subtitle">See and control your other computers from here.</p>
             </div>
-            <div class="conn-side">
-              <span id="conn-rtt" class="muted"></span>
-              <button id="disconnect-btn">Disconnect</button>
+          </header>
+
+          <p id="connect-msg" class="msg" role="status"></p>
+
+          <div id="welcome" class="welcome" hidden>
+            <div class="welcome-mark">
+              <svg viewBox="0 0 32 32" aria-hidden="true">
+                <rect x="1" y="1" width="30" height="30" rx="8" fill="url(#brand-grad)" />
+                <circle cx="10.5" cy="16" r="3.6" class="logo-ring" />
+                <circle cx="21.5" cy="16" r="3.6" class="logo-ring" />
+                <path d="M14 16h4" class="logo-line" />
+              </svg>
+            </div>
+            <h2>Welcome to Tether</h2>
+            <p>Reach any of your computers from this one. See its screen, use its mouse and keyboard, share the clipboard, or wake it up.</p>
+            <div class="welcome-steps">
+              <div><span class="step-n">1</span><span>On the other computer, open Tether, go to <strong>This computer</strong> and press <strong>Start sharing</strong>.</span></div>
+              <div><span class="step-n">2</span><span>Enter its address and the pairing code it shows, below, and press <strong>Pair</strong>.</span></div>
+              <div><span class="step-n">3</span><span>From then on, just press <strong>Connect</strong>.</span></div>
             </div>
           </div>
-          <div class="muted small">This device is allowed to:</div>
-          <ul id="conn-perms" class="chips"></ul>
 
-          <div id="clipboard-box" class="screen-box" hidden>
-            <div class="row actions start">
-              <button id="clip-send">Send my clipboard</button>
-              <button id="clip-get">Get its clipboard</button>
-            </div>
-            <p id="clip-msg" class="msg" role="status"></p>
-            <p class="hint">
-              Copies text only, up to 1 MiB. The other computer has to have clipboard sharing turned on.
-            </p>
-          </div>
+          <div id="computers" class="computers" hidden></div>
 
-          <div class="screen-box">
-            <div class="row actions start">
-              <button id="show-screen" class="primary">Show screen</button>
-              <label class="check inline">
-                <input id="play-sound" type="checkbox" checked />
-                Play its sound
-              </label>
-              <button id="open-viewers">Open every screen in its own window</button>
-              <button id="stop-screen" hidden>Stop video</button>
-            </div>
-            <p id="screen-msg" class="msg" role="status"></p>
-            <video id="screen" autoplay playsinline tabindex="0" hidden></video>
-            <div id="media-row" class="row actions start" hidden>
-              <button data-key="MediaTrackPrevious" aria-label="Previous track" title="Previous track">&#9198;</button>
-              <button data-key="MediaPlayPause" aria-label="Play or pause" title="Play or pause">&#9199;</button>
-              <button data-key="MediaTrackNext" aria-label="Next track" title="Next track">&#9197;</button>
-              <button data-key="AudioVolumeMute" aria-label="Mute" title="Mute">&#128263;</button>
-              <button data-key="AudioVolumeDown" aria-label="Volume down" title="Volume down">&#128265;</button>
-              <button data-key="AudioVolumeUp" aria-label="Volume up" title="Volume up">&#128266;</button>
-            </div>
-            <p id="media-msg" class="hint" hidden>Media keys act on the other computer when it has remote control turned on.</p>
-            <div id="wake-row" class="row" hidden>
+          <section class="card" aria-labelledby="add-title" id="add-card">
+            <h2 id="add-title">Add or connect to a computer</h2>
+            <p class="hint">The first time, pair with the code shown on the other computer. After that, connect with just the address.</p>
+            <div class="row">
               <label class="grow">
-                Wake a computer through this host
-                <input id="wake-target" type="text" placeholder="name it knows, for example desk" spellcheck="false" />
+                Address
+                <input id="address" type="text" placeholder="192.168.1.20 or my-pc:7420" spellcheck="false" />
               </label>
-              <button id="wake-send">Wake</button>
-            </div>
-            <p id="wake-msg" class="msg" role="status"></p>
-            <div id="control-row" hidden>
-              <label class="check">
-                <input id="control" type="checkbox" />
-                Control this computer
+              <label class="grow">
+                Pairing code
+                <input id="code" type="text" placeholder="XXXX-XXXX-XXXX-XXXX, or paste a pairing link" spellcheck="false" autocomplete="off" />
               </label>
-              <p class="hint">
-                Move the pointer over the video to control it. Click the video before typing,
-                and click anywhere else to take your keyboard back.
-              </p>
             </div>
-          </div>
-        </div>
-      </section>
+            <div class="row actions">
+              <button id="pair-btn">Pair</button>
+              <button id="connect-btn" class="primary">Connect</button>
+            </div>
+          </section>
+        </section>
 
-      <section class="card" aria-labelledby="host-title">
-        <h2 id="host-title">Accept connections on this device</h2>
-        <div id="host-form">
-          <div class="row">
-            <label class="grow">
-              Listen on
-              <input id="bind" type="text" value="0.0.0.0:7420" spellcheck="false" />
+        <!-- ================================ Session ================================ -->
+        <section id="connection" class="view session" aria-labelledby="conn-name" hidden>
+          <header class="session-head">
+            <div class="avatar" aria-hidden="true"><svg class="icon"><use href="#i-monitor" /></svg></div>
+            <div class="session-id">
+              <h1><span id="conn-name"></span> <span id="conn-platform" class="platform"></span></h1>
+              <code id="conn-fingerprint"></code>
+            </div>
+            <span id="conn-rtt" class="pill"></span>
+            <button id="disconnect-btn" class="danger-outline">Disconnect</button>
+          </header>
+
+          <div class="allowed">
+            <span class="muted small">Allowed to</span>
+            <ul id="conn-perms" class="chips"></ul>
+          </div>
+
+          <div class="toolbar">
+            <button id="show-screen" class="primary with-icon"><svg class="icon"><use href="#i-play" /></svg>Show screen</button>
+            <button id="stop-screen" class="with-icon" hidden><svg class="icon"><use href="#i-stop" /></svg>Stop</button>
+            <button id="open-viewers" class="with-icon" title="Open each of its screens in a separate window"><svg class="icon"><use href="#i-windows" /></svg>Screens in windows</button>
+            <span class="toolbar-gap"></span>
+            <label class="inline-switch">
+              <input id="play-sound" type="checkbox" class="switch" checked />
+              <span>Sound</span>
             </label>
-          </div>
-          <label class="check">
-            <input id="pairing" type="checkbox" checked />
-            Show a one-time pairing code so a new device can pair
-          </label>
-          <label class="check">
-            <input id="video" type="checkbox" checked />
-            Share video with devices that may view:
-            <select id="video-source" aria-label="What to share"></select>
-          </label>
-          <label class="check">
-            <input id="share-audio" type="checkbox" checked />
-            Also share this computer's sound with the video
-          </label>
-          <label class="check">
-            <input id="allow-input" type="checkbox" />
-            Allow remote control: devices that may use input can move this computer's mouse and type on its keyboard
-          </label>
-          <label class="check">
-            <input id="allow-clipboard" type="checkbox" />
-            Allow clipboard sharing: devices that may use files can read and replace the text on this computer's clipboard
-          </label>
-          <label>
-            Computers this device can wake, one per line, as name=MAC (or name=MAC@broadcast).
-            Devices that may use power can then wake them.
-            <textarea id="wake-targets" rows="2" spellcheck="false" placeholder="desk=aa:bb:cc:dd:ee:ff@192.168.1.255"></textarea>
-          </label>
-          <fieldset id="grant-set">
-            <legend>A device that pairs with the code may</legend>
-            <div id="grant-boxes" class="boxes"></div>
-          </fieldset>
-          <div class="row actions">
-            <button id="host-start" class="primary">Start</button>
-          </div>
-        </div>
-        <div id="host-running" hidden>
-          <p>Listening on <code id="host-address"></code></p>
-          <div id="code-block" class="code-block" hidden>
-            <div class="muted small">Pairing code, single use</div>
-            <div id="host-code" class="big-code"></div>
-            <div class="qr-row">
-              <img id="host-qr" alt="QR code that pairs a phone with this computer" width="180" height="180" />
-              <div class="qr-side">
-                <p class="hint">Scan this with the Tether app on your phone, or paste the link below into another computer's pairing code box.</p>
-                <label id="qr-address-row" class="grow" hidden>
-                  Address in the QR code
-                  <select id="qr-address"></select>
-                </label>
-                <code id="host-link" class="link"></code>
-              </div>
+            <div id="control-row" class="control-row" hidden>
+              <label class="inline-switch">
+                <input id="control" type="checkbox" class="switch" />
+                <span>Control</span>
+              </label>
             </div>
           </div>
-          <div class="row actions">
-            <button id="host-stop">Stop</button>
-          </div>
-          <ul id="host-log" class="log"></ul>
-        </div>
-        <p id="host-msg" class="msg" role="status"></p>
-      </section>
+          <p id="screen-msg" class="msg" role="status"></p>
 
-      <section class="card" aria-labelledby="peers-title">
-        <h2 id="peers-title">Devices paired with this machine</h2>
-        <p class="hint">
-          What each device may do when it connects here. Changes apply straight away, even to
-          open sessions.
-        </p>
-        <div id="peers"></div>
-        <p id="peers-msg" class="msg" role="status"></p>
-      </section>
-    </main>
+          <div class="stage">
+            <div class="stage-empty">
+              <svg class="icon big"><use href="#i-monitor" /></svg>
+              <p>Press <strong>Show screen</strong> to see this computer.</p>
+              <p class="small">With Control on, move over the picture to point, and click it before typing.</p>
+            </div>
+            <video id="screen" autoplay playsinline tabindex="0" hidden></video>
+          </div>
+
+          <div class="tools">
+            <div id="media-tool" class="tool" hidden>
+              <h3>Media</h3>
+              <div id="media-row" class="media-row" hidden>
+                <button data-key="MediaTrackPrevious" aria-label="Previous track" title="Previous track">&#9198;</button>
+                <button data-key="MediaPlayPause" aria-label="Play or pause" title="Play or pause">&#9199;</button>
+                <button data-key="MediaTrackNext" aria-label="Next track" title="Next track">&#9197;</button>
+                <button data-key="AudioVolumeMute" aria-label="Mute" title="Mute">&#128263;</button>
+                <button data-key="AudioVolumeDown" aria-label="Volume down" title="Volume down">&#128265;</button>
+                <button data-key="AudioVolumeUp" aria-label="Volume up" title="Volume up">&#128266;</button>
+              </div>
+              <p id="media-msg" class="hint small" hidden>Presses the real media keys, so remote control has to be on at the other end.</p>
+            </div>
+
+            <div id="clipboard-box" class="tool" hidden>
+              <h3>Clipboard</h3>
+              <div class="row tight">
+                <button id="clip-send">Send mine</button>
+                <button id="clip-get">Get theirs</button>
+              </div>
+              <p id="clip-msg" class="msg" role="status"></p>
+              <p class="hint small">Text only, up to 1 MiB. Clipboard sharing has to be on at the other end.</p>
+            </div>
+
+            <div id="wake-tool" class="tool" hidden>
+              <h3>Wake a computer</h3>
+              <div id="wake-row" class="row tight" hidden>
+                <input id="wake-target" type="text" placeholder="name, for example desk" spellcheck="false" aria-label="Name of the computer to wake" />
+                <button id="wake-send">Wake</button>
+              </div>
+              <p id="wake-msg" class="msg" role="status"></p>
+              <p class="hint small">This computer sends the wake signal onto its own network.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============================== This computer ============================== -->
+        <section id="view-host" class="view" aria-labelledby="host-title">
+          <header class="page-head">
+            <div>
+              <h1 id="host-title">This computer</h1>
+              <p class="subtitle">Let your other devices see and control this one.</p>
+            </div>
+          </header>
+
+          <div id="host-form">
+            <section class="card settings" aria-label="Sharing">
+              <h2>Sharing</h2>
+              <label class="setting">
+                <span class="setting-text"><strong>Pairing code</strong><span class="muted small">Show a one-time code so a new device can pair.</span></span>
+                <input id="pairing" type="checkbox" class="switch" checked />
+              </label>
+              <label class="setting">
+                <span class="setting-text"><strong>Share my screen</strong><span class="muted small">Devices allowed to view can watch this.</span></span>
+                <input id="video" type="checkbox" class="switch" checked />
+              </label>
+              <div class="setting">
+                <span class="setting-text"><strong>What to share</strong><span class="muted small">A display, or a test pattern for trying things out.</span></span>
+                <select id="video-source" aria-label="What to share"></select>
+              </div>
+              <label class="setting">
+                <span class="setting-text"><strong>Share sound</strong><span class="muted small">Send what this computer is playing with the video.</span></span>
+                <input id="share-audio" type="checkbox" class="switch" checked />
+              </label>
+            </section>
+
+            <section class="card settings" aria-label="Control">
+              <h2>Control</h2>
+              <label class="setting">
+                <span class="setting-text"><strong>Remote control</strong><span class="muted small">Devices allowed to use mouse and keyboard can move this computer's pointer and type.</span></span>
+                <input id="allow-input" type="checkbox" class="switch" />
+              </label>
+              <label class="setting">
+                <span class="setting-text"><strong>Clipboard sharing</strong><span class="muted small">Devices allowed to use clipboard and files can read and replace the text on this computer's clipboard.</span></span>
+                <input id="allow-clipboard" type="checkbox" class="switch" />
+              </label>
+              <fieldset id="grant-set" class="grant">
+                <legend>A device that pairs with the code may</legend>
+                <div id="grant-boxes" class="boxes"></div>
+              </fieldset>
+            </section>
+
+            <details class="card advanced">
+              <summary>Advanced</summary>
+              <div class="row">
+                <label class="grow">
+                  Listen on
+                  <input id="bind" type="text" value="0.0.0.0:7420" spellcheck="false" />
+                </label>
+              </div>
+              <label class="grow block">
+                Computers this one can wake, one per line, as name=MAC (or name=MAC@broadcast)
+                <textarea id="wake-targets" rows="2" spellcheck="false" placeholder="desk=aa:bb:cc:dd:ee:ff@192.168.1.255"></textarea>
+              </label>
+              <p class="hint small">Devices allowed to use power and wake can then wake them.</p>
+            </details>
+
+            <div class="start-row">
+              <button id="host-start" class="primary large">Start sharing</button>
+            </div>
+          </div>
+
+          <div id="host-running" hidden>
+            <section class="card status-card">
+              <div class="status-top">
+                <div class="status-line"><span class="dot live big" aria-hidden="true"></span><strong>Sharing is on</strong></div>
+                <button id="host-stop" class="danger-outline">Stop sharing</button>
+              </div>
+              <p class="muted">Listening on <code id="host-address"></code></p>
+
+              <div id="code-block" class="code-block" hidden>
+                <div class="qr-row">
+                  <img id="host-qr" alt="QR code that pairs a phone with this computer" width="180" height="180" />
+                  <div class="qr-side">
+                    <div class="muted small">Pairing code, single use</div>
+                    <div id="host-code" class="big-code"></div>
+                    <p class="hint">Scan the QR code with the Tether app on your phone, or paste the link below into another computer's pairing code box.</p>
+                    <label id="qr-address-row" class="grow" hidden>
+                      Address in the QR code
+                      <select id="qr-address"></select>
+                    </label>
+                    <code id="host-link" class="link"></code>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2>Activity</h2>
+              <ul id="host-log" class="log"></ul>
+            </section>
+          </div>
+          <p id="host-msg" class="msg" role="status"></p>
+
+          <section class="card" aria-labelledby="peers-title">
+            <h2 id="peers-title">Devices with access</h2>
+            <p class="hint">What each device may do when it connects here. Changes apply straight away, even to open sessions.</p>
+            <div id="peers"></div>
+            <p id="peers-msg" class="msg" role="status"></p>
+          </section>
+        </section>
+      </main>
+    </div>
 
     <script src="renderer.js"></script>
   </body>
