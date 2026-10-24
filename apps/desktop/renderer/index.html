@@ -56,6 +56,17 @@
           <div class="muted small">This device is allowed to:</div>
           <ul id="conn-perms" class="chips"></ul>
 
+          <div id="clipboard-box" class="screen-box" hidden>
+            <div class="row actions start">
+              <button id="clip-send">Send my clipboard</button>
+              <button id="clip-get">Get its clipboard</button>
+            </div>
+            <p id="clip-msg" class="msg" role="status"></p>
+            <p class="hint">
+              Copies text only, up to 1 MiB. The other computer has to have clipboard sharing turned on.
+            </p>
+          </div>
+
           <div class="screen-box">
             <div class="row actions start">
               <button id="show-screen" class="primary">Show screen</button>
@@ -108,6 +119,10 @@
           <label class="check">
             <input id="allow-input" type="checkbox" />
             Allow remote control: devices that may use input can move this computer's mouse and type on its keyboard
+          </label>
+          <label class="check">
+            <input id="allow-clipboard" type="checkbox" />
+            Allow clipboard sharing: devices that may use files can read and replace the text on this computer's clipboard
           </label>
           <fieldset id="grant-set">
             <legend>A device that pairs with the code may</legend>

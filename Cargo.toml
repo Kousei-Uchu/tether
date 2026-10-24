@@ -7,6 +7,7 @@ members = [
     "crates/tether-node",
     "crates/tether-media",
     "crates/tether-input",
+    "crates/tether-clipboard",
     "crates/tether-ffi",
 ]
 
@@ -21,8 +22,10 @@ tether-proto = { path = "crates/tether-proto" }
 tether-core = { path = "crates/tether-core" }
 tether-media = { path = "crates/tether-media" }
 tether-input = { path = "crates/tether-input" }
+tether-clipboard = { path = "crates/tether-clipboard" }
 tether-ffi = { path = "crates/tether-ffi" }
 anyhow = "1"
+arboard = { version = "3", default-features = false }
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 directories = "5"

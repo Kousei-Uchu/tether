@@ -56,11 +56,13 @@ export class Device {
   connect(address: string): Promise<Connection>;
   /** `video` lets permitted devices watch a stream: "test-pattern", "screen" or "screen:<id>" (see listDisplays). */
   /** `input: true` lets devices with the "input" permission control this computer. Off by default. */
+  /** `clipboard: true` lets devices with the "files" permission read and replace this computer's clipboard text. Off by default. */
   listen(
     bind: string,
     pairing?: PairingOptions | null,
     video?: string | null,
     input?: boolean | null,
+    clipboard?: boolean | null,
   ): Promise<HostHandle>;
 }
 
@@ -72,6 +74,10 @@ export class Connection {
   ping(): Promise<number>;
   /** Sends one mouse or keyboard event. Refusals come back later through takeNotices(). */
   sendInput(event: InputEvent): Promise<void>;
+  /** Puts text on the host's clipboard. Needs "files" and a host with clipboard sharing on. Resolves with what the host said. */
+  sendClipboard(text: string): Promise<string>;
+  /** The host's clipboard text. `text` is missing, with the reason in `notice`, if the host refused or has no text. */
+  getClipboard(): Promise<ClipboardReply>;
   /** Messages from the host for the person to read. Collected during ping(). */
   takeNotices(): Promise<string[]>;
   /** Sends a WebRTC offer, resolves with the host's answer. Needs the "view" permission. */
@@ -81,6 +87,13 @@ export class Connection {
   /** Like requestVideo, for one display. Each display has its own connection. */
   requestDisplayVideo(display: number, offer: string): Promise<string>;
   close(): Promise<void>;
+}
+
+export interface ClipboardReply {
+  /** Missing if the host refused or has no text on its clipboard. */
+  text?: string;
+  /** What the host said about it, if anything. */
+  notice?: string;
 }
 
 export class HostHandle {

@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 tether-core.workspace = true
 tether-media.workspace = true
 tether-input.workspace = true
+tether-clipboard.workspace = true
 napi = { version = "2", default-features = false, features = ["napi8", "async", "tokio_rt"] }
 napi-derive = "2"
 tokio.workspace = true

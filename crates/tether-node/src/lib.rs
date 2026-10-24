@@ -16,6 +16,7 @@ use std::{
     },
     time::Duration,
 };
+use tether_clipboard::SystemClipboard;
 use tether_core::{
     identity::Identity,
     link::{with_default_port, PairingLink},
@@ -201,6 +202,13 @@ pub struct HostEvent {
     pub message: String,
 }
 
+/// The host's answer to `getClipboard`.
+#[napi(object)]
+pub struct ClipboardReply {
+    pub text: Option<String>,
+    pub notice: Option<String>,
+}
+
 /// This machine's identity and trust store.
 #[napi]
 pub struct Device {
@@ -333,7 +341,8 @@ impl Device {
     /// Starts accepting connections. Pass `pairing` to also show a one-time pairing code, and
     /// `video` (`"test-pattern"`, `"screen"` or `"screen:<id>"`) to let permitted devices watch a stream, and
     /// `input` to let devices with the `input` permission control this computer's mouse and
-    /// keyboard. Remote control is off unless the host turns it on here.
+    /// keyboard. Remote control is off unless the host turns it on here. `clipboard` does the
+    /// same for devices with the `files` permission and this computer's clipboard.
     #[napi]
     pub async fn listen(
         &self,
@@ -341,6 +350,7 @@ impl Device {
         pairing: Option<PairingOptions>,
         video: Option<String>,
         input: Option<bool>,
+        clipboard: Option<bool>,
     ) -> Result<HostHandle> {
         let offer = match pairing {
             None => None,
@@ -374,6 +384,10 @@ impl Device {
                 .unwrap_or(false)
                 .then(|| Arc::new(EnigoInput) as Arc<dyn tether_core::input::InputProvider>),
             wake: None,
+            clipboard: clipboard.unwrap_or(false).then(|| {
+                Arc::new(SystemClipboard::new())
+                    as Arc<dyn tether_core::clipboard::ClipboardProvider>
+            }),
         });
 
         let listener = TcpListener::bind(&bind)
@@ -522,6 +536,65 @@ impl Connection {
             return Err(err(e));
         }
         Ok(())
+    }
+
+    /// Puts `text` on the host's clipboard. Needs the `files` permission and a host that has
+    /// turned clipboard sharing on. Resolves with what the host said, for example
+    /// "Copied to the host's clipboard." or why it refused.
+    #[napi]
+    pub async fn send_clipboard(&self, text: String) -> Result<String> {
+        if text.len() > tether_core::proto::MAX_CLIPBOARD_BYTES {
+            return Err(err(
+                "That text is larger than 1 MiB, which is the most that can be sent.",
+            ));
+        }
+        let nonce = self.nonce.fetch_add(1, Ordering::Relaxed);
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
+        // The host answers with a notice, which arrives ahead of the reply to this ping.
+        let result = match session.send_clipboard(&text).await {
+            Ok(()) => session.ping(nonce).await.map(|_| ()),
+            Err(e) => Err(e),
+        };
+        *self.permissions.lock().expect("permissions lock") = names(session.permissions);
+        match result {
+            Ok(()) => {
+                let notices = session.take_notices();
+                if notices.is_empty() {
+                    Err(err("the host did not answer"))
+                } else {
+                    Ok(notices.join(" "))
+                }
+            }
+            Err(e) => {
+                *guard = None;
+                Err(err(e))
+            }
+        }
+    }
+
+    /// The text on the host's clipboard. Needs the `files` permission and a host that has
+    /// turned clipboard sharing on. `text` is null, with the reason in `notice`, if the host
+    /// refused or has no text on its clipboard.
+    #[napi]
+    pub async fn get_clipboard(&self) -> Result<ClipboardReply> {
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
+        let result = session.get_clipboard().await;
+        *self.permissions.lock().expect("permissions lock") = names(session.permissions);
+        match result {
+            Ok(text) => {
+                let notices = session.take_notices();
+                Ok(ClipboardReply {
+                    text,
+                    notice: (!notices.is_empty()).then(|| notices.join(" ")),
+                })
+            }
+            Err(e) => {
+                *guard = None;
+                Err(err(e))
+            }
+        }
     }
 
     /// Messages from the host meant for the person, such as "remote control is turned off".

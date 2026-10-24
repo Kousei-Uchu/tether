@@ -6,6 +6,7 @@
 
 use crate::{
     channel::{ChannelError, Role, SecureChannel, SecureSender},
+    clipboard::ClipboardProvider,
     identity::{fingerprint, Identity},
     input::{InputProvider, InputSink},
     media::MediaProvider,
@@ -21,7 +22,7 @@ use std::{
 };
 use tether_proto::{
     DisplayDesc, Hello, InputEvent, Intent, Message, Permission, Platform, SignalKind,
-    PROTOCOL_VERSION,
+    MAX_CLIPBOARD_BYTES, PROTOCOL_VERSION,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -124,6 +125,9 @@ pub struct HostConfig {
     /// Wake-on-LAN targets this host can wake for a device holding `power`. `None` means
     /// this host is not a wake relay.
     pub wake: Option<Arc<dyn WakeProvider>>,
+    /// Whether this host lets devices read and replace its clipboard. `None` means no, even
+    /// for a device that holds the `files` permission.
+    pub clipboard: Option<Arc<dyn ClipboardProvider>>,
 }
 
 impl HostConfig {
@@ -481,6 +485,40 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         Ok(())
     }
 
+    /// Client side: puts `text` on the host's clipboard. Needs `files`. The host answers with
+    /// a notice (done, refused or turned off), so call `ping` and then `take_notices`.
+    pub async fn send_clipboard(&mut self, text: &str) -> Result<(), SessionError> {
+        if text.len() > MAX_CLIPBOARD_BYTES {
+            return Err(SessionError::Protocol(
+                "the clipboard text is larger than 1 MiB",
+            ));
+        }
+        self.channel
+            .send(&Message::ClipboardSet {
+                text: text.to_owned(),
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Client side: the text on the host's clipboard. Needs `files`. `None` means the host
+    /// refused or has no text on its clipboard; the reason arrives as a notice.
+    pub async fn get_clipboard(&mut self) -> Result<Option<String>, SessionError> {
+        self.channel.send(&Message::ClipboardGet).await?;
+        loop {
+            match timeout(SIGNAL_TIMEOUT, self.channel.recv())
+                .await
+                .map_err(|_| SessionError::Timeout)??
+            {
+                Message::ClipboardData { text } => return Ok(text),
+                Message::Permissions { granted } => self.permissions = granted.into(),
+                Message::Notice { text } => self.push_notice(text),
+                Message::Bye { reason } => return Err(SessionError::Rejected(reason)),
+                _ => continue,
+            }
+        }
+    }
+
     /// Reads whatever the host sent before hanging up, looking for its reason.
     async fn read_goodbye(&mut self) -> Option<String> {
         loop {
@@ -784,6 +822,17 @@ async fn serve_loop<W: AsyncWrite + Unpin>(
                         let text = handle_wake(host, *permissions, state, &target);
                         sender.send(&Message::Notice { text }).await?;
                     }
+                    Message::ClipboardGet => {
+                        let (notice, text) = handle_clipboard_get(host, *permissions).await;
+                        if let Some(text) = notice {
+                            sender.send(&Message::Notice { text }).await?;
+                        }
+                        sender.send(&Message::ClipboardData { text }).await?;
+                    }
+                    Message::ClipboardSet { text } => {
+                        let text = handle_clipboard_set(host, *permissions, text).await;
+                        sender.send(&Message::Notice { text }).await?;
+                    }
                     other => tracing::debug!(?other, "ignoring unexpected message"),
                 }
             }
@@ -826,6 +875,67 @@ fn handle_wake(
     }
     state.last_wake = Some(Instant::now());
     provider.wake(target).unwrap_or_else(|reason| reason)
+}
+
+/// The clipboard provider, if this device may use it. The error is what to tell the person.
+fn clipboard_for(
+    host: &HostConfig,
+    permissions: PermissionSet,
+) -> Result<Arc<dyn ClipboardProvider>, String> {
+    if permissions.require(Permission::Files).is_err() {
+        return Err("This device is not allowed to use `files` on the host.".to_owned());
+    }
+    host.clipboard
+        .clone()
+        .ok_or_else(|| "Clipboard sharing is turned off on the host.".to_owned())
+}
+
+/// Every clipboard request gets an answer, because the person pressed a button and is
+/// waiting. Returns a notice to show (if any) and the text (if any).
+async fn handle_clipboard_get(
+    host: &HostConfig,
+    permissions: PermissionSet,
+) -> (Option<String>, Option<String>) {
+    let provider = match clipboard_for(host, permissions) {
+        Ok(p) => p,
+        Err(notice) => return (Some(notice), None),
+    };
+    match tokio::task::spawn_blocking(move || provider.read()).await {
+        Ok(Ok(Some(text))) if text.len() > MAX_CLIPBOARD_BYTES => (
+            Some("The host's clipboard text is larger than 1 MiB, so it was not sent.".to_owned()),
+            None,
+        ),
+        Ok(Ok(Some(text))) if !text.is_empty() => (None, Some(text)),
+        Ok(Ok(_)) => (
+            Some("The host's clipboard has no text on it.".to_owned()),
+            None,
+        ),
+        Ok(Err(reason)) => (Some(reason), None),
+        Err(_) => (
+            Some("The host could not read its clipboard.".to_owned()),
+            None,
+        ),
+    }
+}
+
+async fn handle_clipboard_set(
+    host: &HostConfig,
+    permissions: PermissionSet,
+    text: String,
+) -> String {
+    let provider = match clipboard_for(host, permissions) {
+        Ok(p) => p,
+        Err(notice) => return notice,
+    };
+    if text.len() > MAX_CLIPBOARD_BYTES {
+        return "That text is larger than 1 MiB, so the host's clipboard was not changed."
+            .to_owned();
+    }
+    match tokio::task::spawn_blocking(move || provider.write(&text)).await {
+        Ok(Ok(())) => "Copied to the host's clipboard.".to_owned(),
+        Ok(Err(reason)) => reason,
+        Err(_) => "The host could not write to its clipboard.".to_owned(),
+    }
 }
 
 async fn handle_input<W: AsyncWrite + Unpin>(

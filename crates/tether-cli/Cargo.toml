@@ -13,6 +13,7 @@ path = "src/main.rs"
 tether-core.workspace = true
 tether-media.workspace = true
 tether-input.workspace = true
+tether-clipboard.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

@@ -262,6 +262,25 @@ $('open-viewers').addEventListener('click', async () => {
 });
 $('stop-screen').addEventListener('click', () => stopVideo(''));
 
+// ----- clipboard -----
+async function clipboardAction(button, run) {
+  button.disabled = true;
+  try {
+    say('clip-msg', '');
+    say('clip-msg', await run());
+  } catch (e) {
+    say('clip-msg', e.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+$('clip-send').addEventListener('click', (e) =>
+  clipboardAction(e.currentTarget, () => window.tether.sendClipboard()),
+);
+$('clip-get').addEventListener('click', (e) =>
+  clipboardAction(e.currentTarget, async () => (await window.tether.getClipboard()).message),
+);
+
 // ----- connecting -----
 let pollTimer = null;
 
@@ -271,6 +290,8 @@ function showConnection(state) {
   mayViewNow = state.connected && state.permissions.includes('view');
   mayControlNow = state.connected && state.permissions.includes('input');
   const mayMedia = state.connected && state.permissions.includes('media');
+  const mayFiles = state.connected && state.permissions.includes('files');
+  $('clipboard-box').hidden = !mayFiles;
   $('media-row').hidden = !mayMedia;
   $('media-msg').hidden = !mayMedia;
   $('control').disabled = !mayControlNow;
@@ -422,6 +443,7 @@ $('host-start').addEventListener('click', () =>
       pairing: $('pairing').checked,
       video: $('video').checked ? $('video-source').value : null,
       input: $('allow-input').checked,
+      clipboard: $('allow-clipboard').checked,
       grant: chosenGrant(),
     });
     showHost(state);

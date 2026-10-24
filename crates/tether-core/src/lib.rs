@@ -1,6 +1,7 @@
 //! Identity, trust, pairing and the encrypted channel. No platform code lives here.
 
 pub mod channel;
+pub mod clipboard;
 pub mod identity;
 pub mod input;
 pub mod link;

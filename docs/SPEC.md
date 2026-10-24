@@ -6,8 +6,8 @@ the same commit as the code it describes.
 
 | Field | Value |
 | --- | --- |
-| Status | Milestone 2 of 8 complete, milestone 3 in progress (3a, 3b and 3d done), milestone 5 started (iPhone app written, not yet compiled) |
-| Protocol version | 4 |
+| Status | Milestone 2 of 8 complete, milestone 3 in progress (3a, 3b and 3d done), milestone 5 started (iPhone app written, not yet compiled), milestone 8 started (clipboard text sync) |
+| Protocol version | 5 |
 | Targets | Windows 10+, macOS 13+, iOS 17+ |
 | Core language | Rust (agent, protocol, crypto), SwiftUI (iPhone), Electron (desktop UI) |
 
@@ -54,7 +54,7 @@ Legend: `[x]` done, `[~]` in progress, `[ ]` not started.
 | R-7 | Wake from sleep through an always-on LAN relay | M6 | [ ] |
 | R-8 | One window per remote display, with snapping and saved layout | M7 | [ ] |
 | R-9 | Cursor flows across screen edges between machines | M7 | [ ] |
-| R-10 | Clipboard sync and file transfer | M8 | [ ] |
+| R-10 | Clipboard sync and file transfer | M8 | [~] Clipboard text, pulled or pushed by hand, built and verified on X11. File transfer and automatic sync not started |
 | R-11 | Privacy mode, virtual display, adaptive bitrate | M8 | [ ] |
 | R-12 | Notification forwarding, macros, system stats | M8 | [ ] |
 | R-13 | Per-device permissions, enforced by the host and changeable while connected | M2 | [x] |
@@ -75,6 +75,7 @@ Legend: `[x]` done, `[~]` in progress, `[ ]` not started.
 | `tether-ffi` | The client side of the core for Swift, through UniFFI: pair, connect, ping, input, notices, pairing links | Rust cdylib and staticlib |
 | iPhone app | Controller: trackpad, keyboard, media keys, QR pairing | SwiftUI, in `apps/ios` |
 | `tether-input` | Host side mouse and keyboard injection, one thread per controlling device | Rust crate (enigo) |
+| `tether-clipboard` | Host side clipboard text read and write | Rust crate (arboard) |
 | `tether-node` | Exposes `tether-core` to JavaScript: pair, connect, host, permissions | Rust cdylib using napi-rs, loaded by Electron |
 
 ### 4.1.1 Desktop client notes
@@ -143,7 +144,7 @@ input forwarding when the cursor leaves an edge.
 
 ### 5.2 Secure channel
 
-- Noise `XX_25519_ChaChaPoly_BLAKE2s`, prologue `tether/4` (tracks the protocol version). XX authenticates both static
+- Noise `XX_25519_ChaChaPoly_BLAKE2s`, prologue `tether/5` (tracks the protocol version). XX authenticates both static
   keys and hides them from passive observers.
 - Framing: `u16` big endian length, then one Noise transport frame. Plaintext of a frame is
   one flag byte (0 more, 1 last) plus up to 65518 bytes of message. Messages are chunked
@@ -183,6 +184,9 @@ bump `PROTOCOL_VERSION` for any incompatible change. A unit test pins the indice
 | 9 | `Signal` | both | WebRTC offer (client), answer or error (host). The host answers only if the device holds `view` |
 | 10 | `Input` | client to host | One mouse or keyboard event. Needs `input`, or `media` for media keys, and remote control enabled on the host |
 | 11 | `Notice` | host to client | Something for the person to read, for example that remote control is off. Never ends the session |
+| 16 | `ClipboardGet` | client to host | Ask for the text on the host's clipboard. Needs `files` and the host's clipboard switch |
+| 17 | `ClipboardSet` | client to host | Replace the host's clipboard text. Same gates. Answered with a `Notice` |
+| 18 | `ClipboardData` | host to client | The answer to `ClipboardGet`. `None` if refused or the clipboard has no text, with a `Notice` before it saying why |
 
 ### 5.5 Known limits
 
@@ -206,7 +210,7 @@ bump `PROTOCOL_VERSION` for any incompatible change. A unit test pins the indice
 | `input` | Mouse, keyboard and touch input |
 | `media` | Media keys, volume, brightness |
 | `power` | Lock, sleep, restart, shutdown, wake |
-| `files` | Clipboard sync and file transfer |
+| `files` | Clipboard sync and file transfer. Today: clipboard text, and only if the host also turned clipboard sharing on |
 
 - The host picks the grant when it shows a pairing code (`listen --pair --grant ...`). The
   default is `view` only: look, don't touch.
@@ -308,6 +312,23 @@ and macOS, which also needs the macOS Accessibility permission.
 Input to pixel latency has not been measured yet, because there is no real screen to look at
 until M3c.
 
+### M8a. Clipboard text (done, verified on Linux X11)
+
+- [x] Protocol version 5: `ClipboardGet`, `ClipboardSet`, `ClipboardData`, with a 1 MiB limit enforced on both sides
+- [x] `ClipboardProvider` seam in core and `tether-clipboard` (arboard) behind it, one long-lived handle so X11 keeps serving the text
+- [x] Needs the `files` permission and a host switch (`listen --clipboard`, or the checkbox), off by default
+- [x] Every request is answered, with a notice when refused, so the person is never left waiting
+- [x] CLI: `tether clip get|send`, and `--clipboard` for `listen` and `service install`
+- [x] Bridge: `sendClipboard`, `getClipboard`, `listen(..., clipboard)`. Desktop window: Send and Get buttons, shown only with `files`. The text goes through the main process and never reaches the page
+- [x] Tests: session tests with a fake clipboard (permission, switch, round trip, limits, errors, live revoke), a live test against X11, bridge tests, an Electron test of the buttons
+
+Acceptance: a device with `files` copies text to and from a host that opted in, and loses that
+the moment the permission is revoked. Met on X11. Not yet run on Windows or macOS.
+
+Not done: automatic sync when either clipboard changes (needs change detection per platform
+and a rule against echo loops), images and files, and the iPhone app (the Rust interface is
+not exposed through UniFFI yet).
+
 ### M4. System audio
 
 - [ ] WASAPI loopback and ScreenCaptureKit audio capture
@@ -343,7 +364,7 @@ phone, with controls following permission changes live.
 
 ### M8. Extras
 
-- [ ] Clipboard sync and drag-and-drop file transfer, gated by `files`
+- [~] Clipboard text sync (see M8a). Still to do: automatic sync, images, drag-and-drop file transfer, all gated by `files`
 - [ ] Privacy mode and virtual display driver
 - [ ] Adaptive bitrate and low-latency toggle
 - [ ] Notification forwarding, send-to-device, macros, system stats and task view
@@ -373,6 +394,7 @@ phone, with controls following permission changes live.
 | D-19 | The iPhone uses the Rust core through UniFFI instead of a Swift reimplementation | One implementation of the protocol, handshake and trust rules. Swift only does UI. The interface is testable from Python without Xcode | Accepted |
 | D-20 | Pairing link carries address, code and an optional name, and no extra trust | The code is what authenticates pairing. The link only saves typing, so a tampered link can only fail to pair | Accepted |
 | D-21 | The phone is a controller only for now, and disconnects when backgrounded | iOS suspends sockets in the background, so a clean disconnect beats a dead session. Viewing needs screen capture first | Accepted |
+| D-22 | Clipboard sharing is pull and push by hand, with its own host switch on top of `files` | A clipboard often holds passwords, so reading it needs two opt-ins, like remote control (D-16). Automatic sync would leak whatever is copied next, and needs echo-loop handling, so it waits | Accepted |
 
 ## 8. Open questions
 
@@ -386,6 +408,7 @@ phone, with controls following permission changes live.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-23 | M8a: clipboard text sync, by hand, both directions. Protocol version 5 |
 | 2026-10-23 | M3c started: software screen capture and display choice (Linux verified). Packaging scripts and release workflow for all platforms |
 | 2026-10-19 | M1 complete: protocol, identity, pairing, secure channel, CLI, tests, CI |
 | 2026-10-22 | M5 started: UniFFI crate, pairing links and QR on the desktop host, SwiftUI iPhone app (not yet compiled), iOS build script and CI jobs |

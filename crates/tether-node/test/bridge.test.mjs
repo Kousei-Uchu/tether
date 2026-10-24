@@ -164,6 +164,58 @@ test('input events are validated, gated, and refusals come back as notices', asy
   }
 });
 
+test('clipboard is gated by permission and by the host switch, and text round trips', async () => {
+  const host = makeDevice('h4');
+  const client = makeDevice('c4');
+  try {
+    // Clipboard sharing is off on this host, and the device holds only `view`.
+    let handle = await host.device.listen('127.0.0.1:0', { grant: ['view'] });
+    await client.device.pair(handle.address, handle.pairingCode);
+    let conn = await client.device.connect(handle.address);
+
+    await assert.rejects(conn.sendClipboard('x'.repeat(1024 * 1024 + 1)), /larger than 1 MiB/);
+    assert.match(await conn.sendClipboard('hello'), /not allowed.*files/);
+    const refused = await conn.getClipboard();
+    assert.equal(refused.text, undefined);
+    assert.match(refused.notice, /not allowed.*files/);
+
+    // With the permission but sharing off on the host, the answer says that instead.
+    host.device.grant('c4', ['files']);
+    await conn.ping();
+    assert.match(await conn.sendClipboard('hello'), /turned off/);
+    const off = await conn.getClipboard();
+    assert.equal(off.text, undefined);
+    assert.match(off.notice, /turned off/);
+    await conn.close();
+    handle.stop();
+
+    // With sharing on, text goes there and back. A machine with no clipboard (a headless
+    // Linux box, say) says so, and the round trip is skipped.
+    handle = await host.device.listen('127.0.0.1:0', null, null, false, true);
+    conn = await client.device.connect(handle.address);
+    const answer = await conn.sendClipboard('héllo\nwörld ✓');
+    if (/cannot be reached/.test(answer)) {
+      console.log('skipping the clipboard round trip: this machine has no clipboard');
+    } else {
+      assert.equal(answer, "Copied to the host's clipboard.");
+      const back = await conn.getClipboard();
+      assert.equal(back.text, 'héllo\nwörld ✓');
+      assert.equal(back.notice, undefined);
+    }
+
+    // Revoking `files` takes effect on the open session.
+    host.device.revoke('c4', ['files']);
+    const after = await conn.getClipboard();
+    assert.equal(after.text, undefined);
+    assert.match(after.notice, /not allowed.*files/);
+
+    handle.stop();
+  } finally {
+    rmSync(host.home, { recursive: true, force: true });
+    rmSync(client.home, { recursive: true, force: true });
+  }
+});
+
 test('pairing links round trip and bad ones are explained', () => {
   const { pairingLink, parsePairingLink } = createRequire(import.meta.url)('../index.js');
   const link = pairingLink('192.168.1.20:7420', 'abcd efgh jklm np0o', "Sorren's PC");

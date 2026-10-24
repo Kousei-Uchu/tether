@@ -7,13 +7,16 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Bumped on any incompatible wire change. Peers must match exactly for now.
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 pub const DEFAULT_PORT: u16 = 7420;
 /// Upper bound for one decoded message. Larger messages are rejected by the channel.
 pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
+/// Longest clipboard text a host will accept or send, in bytes of UTF-8. Anything larger is
+/// refused on both sides rather than truncated, so a paste never arrives cut short.
+pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 pub const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 /// Mixed into the Noise handshake so a version mismatch fails the handshake itself.
-pub const PROLOGUE: &[u8] = b"tether/4";
+pub const PROLOGUE: &[u8] = b"tether/5";
 
 pub type Proof = [u8; 32];
 
@@ -423,6 +426,19 @@ pub enum Message {
         kind: SignalKind,
         payload: String,
     },
+    /// Client to host: asks for the text on the host's clipboard. Needs `files`, and the host
+    /// must have turned clipboard sharing on. Answered with `ClipboardData`.
+    ClipboardGet,
+    /// Client to host: puts this text on the host's clipboard. Needs `files`, and the host
+    /// must have turned clipboard sharing on. Answered with a `Notice`.
+    ClipboardSet {
+        text: String,
+    },
+    /// Host to client: the answer to `ClipboardGet`. `None` if the host refused or the
+    /// clipboard holds no text; a `Notice` sent just before says why.
+    ClipboardData {
+        text: Option<String>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -489,6 +505,14 @@ mod tests {
             Message::Notice { text: "hi".into() },
             Message::Wake {
                 target: "desk".into(),
+            },
+            Message::ClipboardGet,
+            Message::ClipboardSet {
+                text: "paste me".into(),
+            },
+            Message::ClipboardData { text: None },
+            Message::ClipboardData {
+                text: Some("héllo".into()),
             },
         ];
         for m in msgs {
@@ -557,6 +581,22 @@ mod tests {
             })
             .unwrap(),
             vec![15, 1, 0, 1, b'x']
+        );
+        assert_eq!(encode(&Message::ClipboardGet).unwrap(), vec![16]);
+        assert_eq!(
+            encode(&Message::ClipboardSet { text: "a".into() }).unwrap(),
+            vec![17, 1, b'a']
+        );
+        assert_eq!(
+            encode(&Message::ClipboardData { text: None }).unwrap(),
+            vec![18, 0]
+        );
+        assert_eq!(
+            encode(&Message::ClipboardData {
+                text: Some("a".into())
+            })
+            .unwrap(),
+            vec![18, 1, 1, b'a']
         );
         assert_eq!(
             encode(&Message::Input(InputEvent::MouseMoveOn {

@@ -1,5 +1,5 @@
 // Electron main process. Owns the Rust bridge; the renderer never touches it directly.
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const QRCode = require('qrcode');
@@ -217,10 +217,34 @@ function registerIpc() {
       return []; // no screen to share, for example a machine with no display attached
     }
   });
-  handle('host:start', async ({ bind, pairing, grant, video, input }) => {
+  // The text itself never goes through the page: main reads and writes this computer's
+  // clipboard and the page only sees what the other computer said about it.
+  handle('clipboard:send', async () => {
+    if (!connection) throw new Error('Not connected.');
+    // Electron's clipboard calls return promises from version 44, and older ones return the
+    // value itself; await works for both.
+    const text = await clipboard.readText();
+    if (!text) throw new Error('There is no text on this computer\'s clipboard.');
+    return connection.sendClipboard(text);
+  });
+  handle('clipboard:get', async () => {
+    if (!connection) throw new Error('Not connected.');
+    const reply = await connection.getClipboard();
+    if (!reply.text) return { copied: false, message: reply.notice || 'The other computer has no text on its clipboard.' };
+    await clipboard.writeText(reply.text);
+    return { copied: true, message: 'Copied the other computer\'s clipboard to this one.' };
+  });
+
+  handle('host:start', async ({ bind, pairing, grant, video, input, clipboard: shareClipboard }) => {
     if (host) throw new Error('Already accepting connections.');
     const options = pairing ? { grant: validPermissions(grant ?? ['view']) } : null;
-    host = await device.listen(String(bind), options, videoSource(video), Boolean(input));
+    host = await device.listen(
+      String(bind),
+      options,
+      videoSource(video),
+      Boolean(input),
+      Boolean(shareClipboard),
+    );
     hostLog = [];
     hostLinks = await buildLinks();
     return hostState();

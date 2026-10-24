@@ -7,6 +7,7 @@ use std::{
 };
 use tether_core::{
     channel::{Role, SecureChannel},
+    clipboard::ClipboardProvider,
     identity::Identity,
     input::{InputProvider, InputSink},
     media::{MediaAnswer, MediaFuture, MediaProvider},
@@ -43,6 +44,7 @@ fn host_config(d: &Device, offer: Option<PairingOffer>) -> HostConfig {
         media: None,
         input: None,
         wake: None,
+        clipboard: None,
     }
 }
 
@@ -454,6 +456,7 @@ fn with_media(host: &HostConfig) -> (Arc<HostConfig>, Arc<AtomicUsize>, Arc<Atom
         })),
         input: None,
         wake: None,
+        clipboard: None,
     };
     (Arc::new(cfg), started, stopped)
 }
@@ -624,6 +627,7 @@ fn with_input(host: &HostConfig, fake: Option<FakeInput>) -> Arc<HostConfig> {
         media: None,
         input: fake.map(|f| Arc::new(f) as Arc<dyn InputProvider>),
         wake: None,
+        clipboard: None,
     })
 }
 
@@ -868,6 +872,7 @@ async fn waking_needs_a_relay_and_the_power_permission() {
         media: None,
         input: None,
         wake: Some(fake.clone()),
+        clipboard: None,
     });
     let n = wake_answer(&relay, &client_dev, &["desk"]).await;
     assert!(n[0].contains("`power`"), "{n:?}");
@@ -905,6 +910,7 @@ async fn each_display_streams_separately_and_clicks_land_on_the_right_one() {
         media: media_host.media.clone(),
         input: Some(Arc::new(fake.clone())),
         wake: None,
+        clipboard: None,
     });
     let (host_session, mut client) = open_session(&host, &client_dev).await;
     let h = host.clone();
@@ -987,6 +993,161 @@ async fn each_display_streams_separately_and_clicks_land_on_the_right_one() {
     let denied = client.list_displays().await.unwrap();
     assert!(denied.is_empty());
     assert!(client.take_notices().iter().any(|n| n.contains("`view`")));
+
+    client.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
+}
+
+// ----- clipboard -----
+
+#[derive(Default)]
+struct FakeClipboard {
+    text: Mutex<Option<String>>,
+    fail: Mutex<Option<String>>,
+}
+
+impl ClipboardProvider for FakeClipboard {
+    fn read(&self) -> Result<Option<String>, String> {
+        if let Some(reason) = self.fail.lock().unwrap().clone() {
+            return Err(reason);
+        }
+        Ok(self.text.lock().unwrap().clone())
+    }
+
+    fn write(&self, text: &str) -> Result<(), String> {
+        if let Some(reason) = self.fail.lock().unwrap().clone() {
+            return Err(reason);
+        }
+        *self.text.lock().unwrap() = Some(text.to_owned());
+        Ok(())
+    }
+}
+
+fn with_clipboard(host: &HostConfig, fake: Option<Arc<FakeClipboard>>) -> Arc<HostConfig> {
+    Arc::new(HostConfig {
+        identity: host.identity.clone(),
+        trust: host.trust.clone(),
+        pairing: host.pairing.clone(),
+        device_name: host.device_name.clone(),
+        media: None,
+        input: None,
+        wake: None,
+        clipboard: fake.map(|f| f as Arc<dyn ClipboardProvider>),
+    })
+}
+
+#[tokio::test]
+async fn clipboard_needs_files_and_the_host_switch() {
+    let host_dev = device();
+    let client_dev = device();
+    let plain = pair_with_grant(&host_dev, &client_dev, None).await; // view only
+    let fake = Arc::new(FakeClipboard::default());
+    *fake.text.lock().unwrap() = Some("secret".into());
+    let host = with_clipboard(&plain, Some(fake.clone()));
+    let (host_session, mut client) = open_session(&host, &client_dev).await;
+    let h = host.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+
+    // Without `files`, reading and writing are both refused, and nothing is touched.
+    assert_eq!(client.get_clipboard().await.unwrap(), None);
+    client.send_clipboard("overwrite").await.unwrap();
+    client.ping(1).await.unwrap();
+    let notices = client.take_notices();
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert!(notices.iter().all(|n| n.contains("`files`")), "{notices:?}");
+    assert_eq!(fake.text.lock().unwrap().as_deref(), Some("secret"));
+
+    // With `files`, but the host has not turned clipboard sharing on.
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.with(Permission::Files))
+        .unwrap();
+    client.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
+    let off = with_clipboard(&plain, None);
+    let (host_session, mut client) = open_session(&off, &client_dev).await;
+    let h = off.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+    assert_eq!(client.get_clipboard().await.unwrap(), None);
+    client.send_clipboard("x").await.unwrap();
+    client.ping(1).await.unwrap();
+    let notices = client.take_notices();
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert!(
+        notices.iter().all(|n| n.contains("turned off")),
+        "{notices:?}"
+    );
+    client.bye("done").await.unwrap();
+    serve.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn clipboard_round_trip_limits_and_errors() {
+    let host_dev = device();
+    let client_dev = device();
+    let plain = pair_with_grant(&host_dev, &client_dev, None).await;
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.with(Permission::Files))
+        .unwrap();
+    let fake = Arc::new(FakeClipboard::default());
+    let host = with_clipboard(&plain, Some(fake.clone()));
+    let (host_session, mut client) = open_session(&host, &client_dev).await;
+    let h = host.clone();
+    let serve = tokio::spawn(async move { host_session.serve(&h).await });
+
+    // An empty clipboard is reported, not returned as empty text.
+    assert_eq!(client.get_clipboard().await.unwrap(), None);
+    assert!(client.take_notices()[0].contains("no text"));
+
+    // Write, then read back, with text that is not plain ASCII.
+    client.send_clipboard("héllo\nwörld ✓").await.unwrap();
+    client.ping(1).await.unwrap();
+    assert_eq!(client.take_notices(), ["Copied to the host's clipboard."]);
+    assert_eq!(fake.text.lock().unwrap().as_deref(), Some("héllo\nwörld ✓"));
+    assert_eq!(
+        client.get_clipboard().await.unwrap().as_deref(),
+        Some("héllo\nwörld ✓")
+    );
+
+    // The client refuses to send too much; a client that does anyway is refused by the host.
+    let big = "a".repeat(tether_proto::MAX_CLIPBOARD_BYTES + 1);
+    assert!(matches!(
+        client.send_clipboard(&big).await,
+        Err(SessionError::Protocol(_))
+    ));
+    client
+        .channel
+        .send(&Message::ClipboardSet { text: big.clone() })
+        .await
+        .unwrap();
+    client.ping(2).await.unwrap();
+    let notices = client.take_notices();
+    assert!(notices[0].contains("1 MiB"), "{notices:?}");
+    assert_eq!(fake.text.lock().unwrap().as_deref(), Some("héllo\nwörld ✓"));
+
+    // Too much on the host's side is not sent either, and exactly the limit is fine.
+    *fake.text.lock().unwrap() = Some(big);
+    assert_eq!(client.get_clipboard().await.unwrap(), None);
+    assert!(client.take_notices()[0].contains("1 MiB"));
+    let exact = "b".repeat(tether_proto::MAX_CLIPBOARD_BYTES);
+    *fake.text.lock().unwrap() = Some(exact.clone());
+    assert_eq!(client.get_clipboard().await.unwrap(), Some(exact));
+
+    // Whatever the platform says goes back to the person.
+    *fake.fail.lock().unwrap() = Some("the clipboard is locked".into());
+    assert_eq!(client.get_clipboard().await.unwrap(), None);
+    client.send_clipboard("x").await.unwrap();
+    client.ping(3).await.unwrap();
+    let notices = client.take_notices();
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert!(notices.iter().all(|n| n.contains("locked")), "{notices:?}");
+
+    // Revoking `files` takes effect on the open session.
+    *fake.fail.lock().unwrap() = None;
+    external_store(&host_dev)
+        .change_permissions("client", |p| p.without(Permission::Files))
+        .unwrap();
+    assert_eq!(client.get_clipboard().await.unwrap(), None);
+    assert!(client.take_notices().iter().any(|n| n.contains("`files`")));
 
     client.bye("done").await.unwrap();
     serve.await.unwrap().unwrap();

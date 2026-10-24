@@ -71,6 +71,10 @@ enum Cmd {
         /// keyboard. Off unless you pass this.
         #[arg(long)]
         input: bool,
+        /// Let devices that hold the files permission read and replace the text on this
+        /// computer's clipboard. Off unless you pass this.
+        #[arg(long)]
+        clipboard: bool,
         /// Act as a wake relay: `name=MAC` or `name=MAC@broadcast` (for example
         /// `desk=aa:bb:cc:dd:ee:ff@192.168.1.255`). Repeat for more computers. Devices that
         /// hold the power permission can then wake them with `tether wake`.
@@ -83,6 +87,11 @@ enum Cmd {
         addr: String,
         /// The name the relay knows the computer by.
         target: String,
+    },
+    /// Copy text to or from the clipboard of a paired host that allows it.
+    Clip {
+        #[command(subcommand)]
+        action: ClipAction,
     },
     /// Pair with a host that is running `listen --pair`.
     Pair {
@@ -101,6 +110,22 @@ enum Cmd {
     Peers {
         #[command(subcommand)]
         action: PeersCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ClipAction {
+    /// Print the text on the host's clipboard. Needs the files permission and a host started
+    /// with `--clipboard`.
+    Get {
+        /// The host's address, `host` or `host:port`.
+        addr: String,
+    },
+    /// Put text on the host's clipboard: the words given, or standard input if there are none.
+    Send {
+        /// The host's address, `host` or `host:port`.
+        addr: String,
+        text: Vec<String>,
     },
 }
 
@@ -136,6 +161,9 @@ enum ServiceAction {
         /// Allow remote control of this computer's mouse and keyboard.
         #[arg(long)]
         input: bool,
+        /// Allow devices with the files permission to read and replace the clipboard.
+        #[arg(long)]
+        clipboard: bool,
         /// Write the definition but do not start it now.
         #[arg(long)]
         no_start: bool,
@@ -199,6 +227,7 @@ async fn run() -> Result<()> {
                 bind,
                 video,
                 input,
+                clipboard,
                 no_start,
                 dry_run,
                 wake,
@@ -214,6 +243,7 @@ async fn run() -> Result<()> {
                         tether_media::VideoSpec::Screen(Some(id)) => format!("screen:{id}"),
                     }),
                     input,
+                    clipboard,
                     wake,
                 };
                 if dry_run {
@@ -232,9 +262,24 @@ async fn run() -> Result<()> {
             grant,
             video,
             input,
+            clipboard,
             wake,
-        } => listen(ctx, bind, pair, pair_ttl_secs, grant, video, input, wake).await,
+        } => {
+            listen(
+                ctx,
+                bind,
+                pair,
+                pair_ttl_secs,
+                grant,
+                video,
+                input,
+                clipboard,
+                wake,
+            )
+            .await
+        }
         Cmd::Wake { addr, target } => wake_via(ctx, &addr, &target).await,
+        Cmd::Clip { action } => clip(ctx, action).await,
         Cmd::Pair { addr, code } => pair_with(ctx, &addr, code).await,
         Cmd::Connect { addr, pings } => connect_to(ctx, &addr, pings).await,
         Cmd::Peers { action } => peers(ctx, action),
@@ -328,6 +373,7 @@ async fn listen(
     grant: PermissionSet,
     video: Option<tether_media::VideoSpec>,
     input: bool,
+    clipboard: bool,
     wake: Vec<String>,
 ) -> Result<()> {
     let relay = if wake.is_empty() {
@@ -367,6 +413,10 @@ async fn listen(
             Arc::new(tether_input::EnigoInput) as Arc<dyn tether_core::input::InputProvider>
         }),
         wake: relay,
+        clipboard: clipboard.then(|| {
+            Arc::new(tether_clipboard::SystemClipboard::new())
+                as Arc<dyn tether_core::clipboard::ClipboardProvider>
+        }),
     });
 
     let listener = TcpListener::bind(&bind)
@@ -472,6 +522,60 @@ async fn wake_via(ctx: Ctx, addr: &str, target: &str) -> Result<()> {
         println!("{n}");
     }
     Ok(())
+}
+
+async fn clip(ctx: Ctx, action: ClipAction) -> Result<()> {
+    let (addr, send) = match &action {
+        ClipAction::Get { addr } => (addr.clone(), None),
+        ClipAction::Send { addr, text } if !text.is_empty() => (addr.clone(), Some(text.join(" "))),
+        ClipAction::Send { addr, .. } => {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+                .context("could not read standard input")?;
+            (addr.clone(), Some(text))
+        }
+    };
+    let mut trust = TrustStore::load(ctx.paths.trust_file())?;
+    let stream = dial(&addr).await?;
+    let Outcome::Authenticated(mut session) = connect(
+        stream,
+        &ctx.identity,
+        &mut trust,
+        &ctx.name,
+        ClientMode::Connect,
+    )
+    .await?
+    else {
+        bail!("unexpected pairing result");
+    };
+    let result = match send {
+        Some(text) => {
+            session.send_clipboard(&text).await?;
+            // The answer comes back as a notice, ahead of the reply to this ping.
+            session.ping(0).await?;
+            let notices = session.take_notices();
+            if notices.is_empty() {
+                Err(anyhow::anyhow!("the host did not answer"))
+            } else {
+                for n in notices {
+                    println!("{n}");
+                }
+                Ok(())
+            }
+        }
+        None => match session.get_clipboard().await? {
+            Some(text) => {
+                print!("{text}");
+                Ok(())
+            }
+            None => Err(anyhow::anyhow!(
+                "{}",
+                session.take_notices().join(" ").trim().to_owned()
+            )),
+        },
+    };
+    session.bye("done").await?;
+    result
 }
 
 async fn connect_to(ctx: Ctx, addr: &str, pings: u32) -> Result<()> {

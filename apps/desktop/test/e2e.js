@@ -35,7 +35,7 @@ async function run() {
   const js = (code) => win.webContents.executeJavaScript(code);
 
   const hostDev = new Device(hostHome, 'host-pc');
-  const handle = await hostDev.listen('127.0.0.1:0', { grant: ['view', 'input'] }, 'test-pattern', true);
+  const handle = await hostDev.listen('127.0.0.1:0', { grant: ['view', 'input'] }, 'test-pattern', true, true);
 
   // Pair through the UI.
   await js(`document.getElementById('address').value = ${JSON.stringify(handle.address)}`);
@@ -201,6 +201,30 @@ async function run() {
   await waitFor(win, `document.getElementById('show-screen').disabled && document.getElementById('screen').hidden`, 'viewer to stop after revoke', 8000);
   hostDev.grant(hostDev.peers()[0].fingerprint, ['view']);
   await waitFor(win, `!document.getElementById('show-screen').disabled`, 'viewing to be allowed again', 8000);
+
+  // Clipboard buttons: hidden without `files`, shown once granted, and both work. The host
+  // and this window share one clipboard here, so what goes over comes straight back; the
+  // bridge tests cover that the text itself really crosses (it comes from an argument there).
+  const { clipboard } = require('electron');
+  const fp = hostDev.peers()[0].fingerprint;
+  if (!(await js(`document.getElementById('clipboard-box').hidden`))) throw new Error('clipboard shown without files');
+  hostDev.grant(fp, ['files']);
+  await waitFor(win, `!document.getElementById('clipboard-box').hidden`, 'clipboard buttons after grant', 8000);
+  const text = 'e2e clipboard ✓\nsecond line';
+  await clipboard.writeText(text);
+  await js(`document.getElementById('clip-send').click()`);
+  await waitFor(win, `document.getElementById('clip-msg').textContent.includes("Copied to the host's clipboard")`, 'send to host', 8000);
+  await js(`document.getElementById('clip-get').click()`);
+  await waitFor(win, `document.getElementById('clip-msg').textContent.includes('Copied the other computer')`, 'get from host', 8000);
+  const back = await clipboard.readText();
+  if (back !== text) throw new Error(`clipboard text changed on the way: ${JSON.stringify(back)}`);
+  console.log('clipboard ok: send and get from the window');
+  // An empty local clipboard is explained rather than sent.
+  await clipboard.clear();
+  await js(`document.getElementById('clip-send').click()`);
+  await waitFor(win, `document.getElementById('clip-msg').classList.contains('error')`, 'empty clipboard message', 8000);
+  hostDev.revoke(fp, ['files']);
+  await waitFor(win, `document.getElementById('clipboard-box').hidden`, 'clipboard buttons to hide after revoke', 8000);
 
   // Host from the UI too.
   await js(`document.getElementById('bind').value = '127.0.0.1:0'`);

@@ -4,7 +4,7 @@ Remote desktop and device control between Windows, macOS and iPhone, built from 
 
 This repository is at **step 3 of 8, with the iPhone app started**: a shared protocol, one-time-code pairing, an
 encrypted, mutually authenticated connection between two machines, per-device permissions,
-an Electron desktop app, live video over WebRTC, and remote mouse and keyboard control. The
+an Electron desktop app, live video over WebRTC, and remote mouse and keyboard control, and clipboard text sync. The
 video source is a **test pattern** for now; capturing a real screen comes after the iPhone app.
 The iPhone app (a trackpad, keyboard and media controller that pairs by scanning a QR code) is
 written but has not been compiled yet; see [apps/ios/README.md](apps/ios/README.md).
@@ -19,6 +19,7 @@ crates/
   tether-cli     the `tether` command, a terminal front end for the same features
   tether-media   host side video: frame sources, H.264 encoder, WebRTC
   tether-input   host side mouse and keyboard injection (enigo)
+  tether-clipboard host side clipboard text read and write (arboard)
   tether-ffi     the client side of the core for Swift, through UniFFI
   tether-node    Node and Electron bridge to tether-core (napi-rs)
 apps/
@@ -72,6 +73,13 @@ control** when starting it (or pass `--input` to `tether listen`), and give the 
 the pointer over it, and click it before typing. Click anywhere else to take your keyboard
 back. Media keys need the `media` permission instead of `input`. Revoking either permission
 takes control away at once, and releases any key that was held down.
+
+To share clipboards: the host must opt in, because this exposes whatever is on its clipboard (passwords copied from a password manager, say). Tick **Allow clipboard sharing** when starting it (or pass `--clipboard` to `tether listen`), and give the device the `files` permission. The connection card then shows **Send my clipboard** and **Get its clipboard**. Only text is copied, up to 1 MiB, and only when you press a button; nothing syncs by itself. From the terminal:
+
+```
+tether clip send <host-address> some text      # or: echo text | tether clip send <host-address>
+tether clip get <host-address>
+```
 
 Platform notes for the host:
 
@@ -250,6 +258,6 @@ previous step is applied.
 
 `Tether` is a working name. To rename, change the crate names in each `Cargo.toml` and the Node package names, the
 `[[bin]]` name in `crates/tether-cli/Cargo.toml`, the `ProjectDirs` string in
-`crates/tether-core/src/paths.rs`, and the `tether/4` prologue in `crates/tether-proto`
+`crates/tether-core/src/paths.rs`, and the `tether/5` prologue in `crates/tether-proto`
 (changing the prologue breaks compatibility with older builds, which is fine before release).
 The prologue is `tether/<protocol version>`, so keep the two in step.
