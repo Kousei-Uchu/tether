@@ -2,6 +2,8 @@
 // video and, when Control is ticked, sends pointer positions aimed at that screen.
 const params = new URLSearchParams(location.search);
 const displayId = Number(params.get('display'));
+// Only one window per host plays its sound, or every window would play it.
+const wantsAudio = params.get('audio') === '1';
 document.title = `${params.get('host') || 'Host'}: ${params.get('name') || 'Screen'}`;
 
 const $ = (id) => document.getElementById(id);
@@ -26,11 +28,14 @@ async function start() {
   const pc = new RTCPeerConnection({ iceServers: [] });
   try {
     const transceiver = pc.addTransceiver('video', { direction: 'recvonly' });
+    if (wantsAudio) pc.addTransceiver('audio', { direction: 'recvonly' });
     const h264 = RTCRtpReceiver.getCapabilities('video').codecs.filter((c) => c.mimeType === 'video/H264');
     if (h264.length === 0) throw new Error('This computer cannot play H.264 video.');
     transceiver.setCodecPreferences(h264);
     pc.ontrack = (event) => {
-      video.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+      const stream = event.streams[0] ?? new MediaStream([event.track]);
+      if (video.srcObject !== stream) video.srcObject = stream;
+      if (event.track.kind === 'audio') $('mute-label').hidden = false;
       say('');
     };
     pc.onconnectionstatechange = () => {
@@ -98,6 +103,7 @@ function scheduleMove(point) {
 }
 
 $('control').addEventListener('change', (e) => setControl(e.target.checked));
+$('mute').addEventListener('change', (e) => (video.muted = e.target.checked));
 video.addEventListener('mousemove', (e) => {
   const p = controlOn && toFraction(e);
   if (p) scheduleMove(p);

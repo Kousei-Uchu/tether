@@ -61,7 +61,12 @@ function openViewer(display, index, hostName) {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.loadFile(path.join(__dirname, 'renderer', 'viewer.html'), {
-    query: { display: String(display.id), name: display.name, host: hostName },
+    query: {
+      display: String(display.id),
+      name: display.name,
+      host: hostName,
+      audio: index === 0 ? '1' : '0',
+    },
   });
   viewers.add(win);
   win.on('closed', () => viewers.delete(win));
@@ -235,7 +240,7 @@ function registerIpc() {
     return { copied: true, message: 'Copied the other computer\'s clipboard to this one.' };
   });
 
-  handle('host:start', async ({ bind, pairing, grant, video, input, clipboard: shareClipboard }) => {
+  handle('host:start', async ({ bind, pairing, grant, video, audio, input, clipboard: shareClipboard }) => {
     if (host) throw new Error('Already accepting connections.');
     const options = pairing ? { grant: validPermissions(grant ?? ['view']) } : null;
     host = await device.listen(
@@ -244,6 +249,7 @@ function registerIpc() {
       videoSource(video),
       Boolean(input),
       Boolean(shareClipboard),
+      video && audio ? 'system' : null,
     );
     hostLog = [];
     hostLinks = await buildLinks();

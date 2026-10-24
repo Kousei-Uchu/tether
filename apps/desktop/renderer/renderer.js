@@ -104,6 +104,8 @@ async function startVideo() {
   viewer = pc;
   try {
     const transceiver = pc.addTransceiver('video', { direction: 'recvonly' });
+    // Sound comes on the same connection, if the host shares it and we ask for it.
+    if ($('play-sound').checked) pc.addTransceiver('audio', { direction: 'recvonly' });
     // Hosts send H.264 only, so only offer that.
     const h264 = RTCRtpReceiver.getCapabilities('video').codecs.filter((c) => c.mimeType === 'video/H264');
     if (h264.length === 0) throw new Error('This computer cannot play H.264 video.');
@@ -111,7 +113,9 @@ async function startVideo() {
 
     pc.ontrack = (event) => {
       const video = $('screen');
-      video.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+      // Video and sound arrive as two tracks of one stream; only set it once.
+      const stream = event.streams[0] ?? new MediaStream([event.track]);
+      if (video.srcObject !== stream) video.srcObject = stream;
       video.hidden = false;
       $('control-row').hidden = false;
       $('stop-screen').hidden = false;
@@ -432,6 +436,10 @@ $('code').addEventListener('input', async (e) => {
   });
 });
 
+$('video').addEventListener('change', (e) => {
+  $('share-audio').disabled = !e.target.checked;
+});
+
 $('pairing').addEventListener('change', (e) => {
   $('grant-set').disabled = !e.target.checked;
 });
@@ -442,6 +450,7 @@ $('host-start').addEventListener('click', () =>
       bind: $('bind').value.trim(),
       pairing: $('pairing').checked,
       video: $('video').checked ? $('video-source').value : null,
+      audio: $('video').checked && $('share-audio').checked,
       input: $('allow-input').checked,
       clipboard: $('allow-clipboard').checked,
       grant: chosenGrant(),

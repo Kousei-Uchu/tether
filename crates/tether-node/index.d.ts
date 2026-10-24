@@ -63,6 +63,8 @@ export class Device {
     video?: string | null,
     input?: boolean | null,
     clipboard?: boolean | null,
+    /** Adds sound to the video: "system" (what the computer plays) or "tone". Needs video. */
+    audio?: string | null,
   ): Promise<HostHandle>;
 }
 

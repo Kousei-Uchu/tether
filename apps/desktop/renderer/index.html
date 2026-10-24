@@ -70,11 +70,15 @@
           <div class="screen-box">
             <div class="row actions start">
               <button id="show-screen" class="primary">Show screen</button>
+              <label class="check inline">
+                <input id="play-sound" type="checkbox" checked />
+                Play its sound
+              </label>
               <button id="open-viewers">Open every screen in its own window</button>
               <button id="stop-screen" hidden>Stop video</button>
             </div>
             <p id="screen-msg" class="msg" role="status"></p>
-            <video id="screen" autoplay muted playsinline tabindex="0" hidden></video>
+            <video id="screen" autoplay playsinline tabindex="0" hidden></video>
             <div id="media-row" class="row actions start" hidden>
               <button data-key="MediaTrackPrevious" aria-label="Previous track" title="Previous track">&#9198;</button>
               <button data-key="MediaPlayPause" aria-label="Play or pause" title="Play or pause">&#9199;</button>
@@ -115,6 +119,10 @@
             <input id="video" type="checkbox" checked />
             Share video with devices that may view:
             <select id="video-source" aria-label="What to share"></select>
+          </label>
+          <label class="check">
+            <input id="share-audio" type="checkbox" checked />
+            Also share this computer's sound with the video
           </label>
           <label class="check">
             <input id="allow-input" type="checkbox" />

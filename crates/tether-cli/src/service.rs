@@ -23,6 +23,7 @@ pub struct Spec {
     pub name: Option<String>,
     pub bind: String,
     pub video: Option<String>,
+    pub audio: Option<String>,
     pub input: bool,
     pub clipboard: bool,
     pub wake: Vec<String>,
@@ -46,6 +47,10 @@ impl Spec {
         a.push(self.bind.clone());
         if let Some(v) = &self.video {
             a.push("--video".into());
+            a.push(v.clone());
+        }
+        if let Some(v) = &self.audio {
+            a.push("--audio".into());
             a.push(v.clone());
         }
         if self.input {
@@ -321,6 +326,7 @@ mod tests {
             name: Some("Kou's \"PC\"".into()),
             bind: "0.0.0.0:7420".into(),
             video: Some("screen".into()),
+            audio: Some("system".into()),
             input: true,
             clipboard: true,
             wake: vec!["desk=aa:bb:cc:dd:ee:ff".into()],
@@ -342,6 +348,8 @@ mod tests {
                 "0.0.0.0:7420",
                 "--video",
                 "screen",
+                "--audio",
+                "system",
                 "--input",
                 "--clipboard",
                 "--wake",
@@ -359,6 +367,7 @@ mod tests {
             name: None,
             bind: "127.0.0.1:1".into(),
             video: None,
+            audio: None,
             input: false,
             clipboard: false,
             wake: vec![],

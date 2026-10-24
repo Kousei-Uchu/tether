@@ -341,7 +341,8 @@ impl Device {
     /// Starts accepting connections. Pass `pairing` to also show a one-time pairing code, and
     /// `video` (`"test-pattern"`, `"screen"` or `"screen:<id>"`) to let permitted devices watch a stream, and
     /// `input` to let devices with the `input` permission control this computer's mouse and
-    /// keyboard. Remote control is off unless the host turns it on here. `clipboard` does the
+    /// keyboard. Remote control is off unless the host turns it on here. `audio` (`"system"`
+    /// or `"tone"`) adds sound to the video; it needs `video`. `clipboard` does the
     /// same for devices with the `files` permission and this computer's clipboard.
     #[napi]
     pub async fn listen(
@@ -351,6 +352,7 @@ impl Device {
         video: Option<String>,
         input: Option<bool>,
         clipboard: Option<bool>,
+        audio: Option<String>,
     ) -> Result<HostHandle> {
         let offer = match pairing {
             None => None,
@@ -367,10 +369,12 @@ impl Device {
             None | Some("") | Some("none") => None,
             Some(spec) => {
                 let spec: tether_media::VideoSpec = spec.parse().map_err(err)?;
-                Some(Arc::new(VideoHost::from_spec(
-                    spec,
-                    MediaOptions::default(),
-                )))
+                let mut host = VideoHost::from_spec(spec, MediaOptions::default());
+                match audio.as_deref() {
+                    None | Some("") | Some("none") => {}
+                    Some(a) => host = host.with_audio(a.parse().map_err(err)?),
+                }
+                Some(Arc::new(host))
             }
         };
         let code = offer.as_ref().map(|o| o.display_code());

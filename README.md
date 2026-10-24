@@ -157,6 +157,18 @@ When you are connected to a computer with several monitors, "Open every screen i
 
 The older single view ("Show screen") still shows only the main monitor. Each extra screen costs another encode on the host, so a laptop sharing three monitors works noticeably harder than one sharing one. With `--video test-pattern` the host pretends to have two screens, which is handy for trying this out.
 
+## Sound
+
+A host can send what the computer is playing along with the video: `tether listen --video screen --audio system`, or the "Also share this computer's sound" box in the desktop app (on by default). It travels as Opus (stereo, 96 kbps) on the same connection as the video, only to viewers that ask for it. The desktop app asks by default; untick "Play its sound" to skip it. When one host's screens are opened in separate windows, only the first window plays the sound, and it has a Mute box.
+
+What it needs on the host:
+
+- Windows: nothing extra (WASAPI loopback).
+- macOS: 14.2 or later, and the system audio recording permission (macOS asks the first time; it is a different permission from Screen Recording). macOS 13 to 14.1 cannot capture system sound yet.
+- Linux: a PulseAudio or PipeWire "monitor" input, which most desktops have. Building needs `libasound2-dev`.
+
+The sound goes only from the host to the viewer so far. Sending your own microphone or sound the other way, and keeping the two from feeding back, comes later. With `--audio tone` the host sends a steady 440 Hz tone, handy for trying it without a sound card.
+
 ## Media keys
 
 A device with the `media` permission gets a row of play, pause, track and volume buttons in the desktop app and on the iPhone. They press the real media keys on the other computer, so the host needs remote control turned on (`--input` or the checkbox), and the key presses go to whatever app that computer sends them to.

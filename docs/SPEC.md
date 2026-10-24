@@ -193,7 +193,7 @@ bump `PROTOCOL_VERSION` for any incompatible change. A unit test pins the indice
 - Clients must keep the session alive with pings (the desktop app pings every 3 seconds). A host drops a device it has not heard from for 60 seconds, including while video plays.
 - Keys are physical positions on a US keyboard (named like DOM `KeyboardEvent.code`). On a host with another layout the characters follow the host's layout. Use `Text` events to type exact characters. Left and right Alt and Meta share one key on the host.
 - On Windows, input cannot reach elevated windows, the UAC prompt or the lock screen unless the host runs elevated. On macOS the host app must be allowed under Accessibility, and Secure Input fields ignore injected keys. Wayland needs a portal and is not supported yet (X11 only on Linux).
-- Video has no audio yet, and one stream per viewer. Each viewer starts its own source and encoder.
+- Sound goes host to viewer only. One stream per viewer and per display: each starts its own source and encoder, and sound is only added when the viewer's offer asks for it.
 
 - No key rotation or revocation sync. Removing a peer is a local action on each device.
 - No rekeying within a session. Acceptable at this volume, revisit when streaming bulk data
@@ -331,8 +331,8 @@ not exposed through UniFFI yet).
 
 ### M4. System audio
 
-- [ ] WASAPI loopback and ScreenCaptureKit audio capture
-- [ ] Opus track both ways, feedback loop prevention
+- [x] Host to viewer: system sound as one Opus track on the video connection (`--audio system|tone`), captured through cpal (WASAPI loopback, CoreAudio process tap, a Linux monitor input). Encode, RTP and decode verified with a tone, through a Rust viewer and through Chromium. Real capture from a sound device is not verified on any platform; macOS 13 to 14.1 is not covered (needs ScreenCaptureKit)
+- [ ] Viewer to host sound, feedback loop prevention
 - [ ] Optional virtual device routing
 
 ### M5. iPhone controller (written, awaiting the first Xcode build)

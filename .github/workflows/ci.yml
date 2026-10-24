@@ -23,7 +23,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Linux libraries for screen capture
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libpipewire-0.3-dev libgbm-dev libegl-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libclang-dev libdbus-1-dev libxdo-dev xvfb x11-xserver-utils
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libwayland-dev libpipewire-0.3-dev libgbm-dev libegl-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libclang-dev libdbus-1-dev libxdo-dev xvfb x11-xserver-utils
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
@@ -61,6 +61,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Linux libraries for screen capture
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libpipewire-0.3-dev libgbm-dev libegl-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libclang-dev libdbus-1-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libwayland-dev libpipewire-0.3-dev libgbm-dev libegl-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libclang-dev libdbus-1-dev
       - name: Interface check from Python against a real host
         run: scripts/ffi-check.sh

@@ -67,6 +67,10 @@ enum Cmd {
         /// display), `screen:<id>` (see `tether displays`) or `test-pattern`.
         #[arg(long)]
         video: Option<tether_media::VideoSpec>,
+        /// Also stream sound with the video: `system` (what this computer is playing) or
+        /// `tone` (a test tone). Needs --video, because sound rides the video connection.
+        #[arg(long, requires = "video")]
+        audio: Option<tether_media::AudioSpec>,
         /// Let devices that hold the input permission control this computer's mouse and
         /// keyboard. Off unless you pass this.
         #[arg(long)]
@@ -158,6 +162,9 @@ enum ServiceAction {
         /// What to share: `screen`, `screen:<id>` or `test-pattern`.
         #[arg(long)]
         video: Option<tether_media::VideoSpec>,
+        /// Also stream sound with the video: `system` or `tone`. Needs --video.
+        #[arg(long, requires = "video")]
+        audio: Option<tether_media::AudioSpec>,
         /// Allow remote control of this computer's mouse and keyboard.
         #[arg(long)]
         input: bool,
@@ -226,6 +233,7 @@ async fn run() -> Result<()> {
             ServiceAction::Install {
                 bind,
                 video,
+                audio,
                 input,
                 clipboard,
                 no_start,
@@ -241,6 +249,10 @@ async fn run() -> Result<()> {
                         tether_media::VideoSpec::TestPattern => "test-pattern".to_owned(),
                         tether_media::VideoSpec::Screen(None) => "screen".to_owned(),
                         tether_media::VideoSpec::Screen(Some(id)) => format!("screen:{id}"),
+                    }),
+                    audio: audio.map(|a| match a {
+                        tether_media::AudioSpec::System => "system".to_owned(),
+                        tether_media::AudioSpec::Tone => "tone".to_owned(),
                     }),
                     input,
                     clipboard,
@@ -261,6 +273,7 @@ async fn run() -> Result<()> {
             pair_ttl_secs,
             grant,
             video,
+            audio,
             input,
             clipboard,
             wake,
@@ -272,6 +285,7 @@ async fn run() -> Result<()> {
                 pair_ttl_secs,
                 grant,
                 video,
+                audio,
                 input,
                 clipboard,
                 wake,
@@ -372,6 +386,7 @@ async fn listen(
     ttl_secs: u64,
     grant: PermissionSet,
     video: Option<tether_media::VideoSpec>,
+    audio: Option<tether_media::AudioSpec>,
     input: bool,
     clipboard: bool,
     wake: Vec<String>,
@@ -404,10 +419,12 @@ async fn listen(
         pairing,
         device_name: ctx.name,
         media: video.map(|spec| {
-            Arc::new(tether_media::VideoHost::from_spec(
-                spec,
-                tether_media::MediaOptions::default(),
-            )) as Arc<dyn tether_core::media::MediaProvider>
+            let mut host =
+                tether_media::VideoHost::from_spec(spec, tether_media::MediaOptions::default());
+            if let Some(audio) = audio {
+                host = host.with_audio(audio);
+            }
+            Arc::new(host) as Arc<dyn tether_core::media::MediaProvider>
         }),
         input: input.then(|| {
             Arc::new(tether_input::EnigoInput) as Arc<dyn tether_core::input::InputProvider>

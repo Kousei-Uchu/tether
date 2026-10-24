@@ -1,3 +1,4 @@
+use crate::audio::{AudioSource, AudioSpec, OpusEncoder, FRAME_DURATION};
 use crate::{
     encoder::H264Encoder,
     source::{Frame, FrameSource, TestPattern},
@@ -20,7 +21,7 @@ use tokio::{sync::mpsc, time::timeout};
 use webrtc::{
     api::{
         interceptor_registry::register_default_interceptors,
-        media_engine::{MediaEngine, MIME_TYPE_H264},
+        media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS},
         setting_engine::SettingEngine,
         APIBuilder,
     },
@@ -44,6 +45,20 @@ use webrtc::{
 
 const GATHER_TIMEOUT: Duration = Duration::from_secs(5);
 const H264_FMTP: &str = "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f";
+
+/// Opus is always 48 kHz and two channels on the wire.
+fn opus_capability() -> RTCRtpCodecCapability {
+    RTCRtpCodecCapability {
+        mime_type: MIME_TYPE_OPUS.to_owned(),
+        clock_rate: 48_000,
+        channels: 2,
+        sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+        rtcp_feedback: vec![],
+    }
+}
+
+/// Plenty for stereo system sound.
+const AUDIO_BITRATE_BPS: i32 = 96_000;
 
 fn h264_capability() -> RTCRtpCodecCapability {
     RTCRtpCodecCapability {
@@ -123,6 +138,7 @@ impl std::str::FromStr for VideoSpec {
     }
 }
 
+type AudioFactory = Arc<dyn Fn() -> Result<Box<dyn AudioSource>, String> + Send + Sync>;
 type DisplaySourceFactory = Arc<dyn Fn(u32) -> Result<Box<dyn FrameSource>, String> + Send + Sync>;
 type SourceFactory = Arc<dyn Fn() -> Result<Box<dyn FrameSource>, String> + Send + Sync>;
 
@@ -161,6 +177,8 @@ pub struct VideoHost {
     /// The displays a viewer can ask for one by one, and how to open one.
     list_displays: Arc<dyn Fn() -> Vec<DisplayDesc> + Send + Sync>,
     display_source: DisplaySourceFactory,
+    /// Where system sound comes from. `None` means this host sends no audio.
+    audio: Option<AudioFactory>,
 }
 
 impl VideoHost {
@@ -229,7 +247,24 @@ impl VideoHost {
             opts,
             list_displays: Arc::new(Vec::new),
             display_source: Arc::new(|_| Err("this host cannot share displays one by one".into())),
+            audio: None,
         }
+    }
+
+    /// Adds sound to the stream. It is only sent to viewers that ask for it (their offer has
+    /// an audio line), so existing video only viewers are unaffected.
+    pub fn with_audio(mut self, spec: AudioSpec) -> Self {
+        self.audio = Some(Arc::new(move || spec.open()));
+        self
+    }
+
+    /// Like [`VideoHost::with_audio`], with any source. Used by tests.
+    pub fn with_audio_source(
+        mut self,
+        open: impl Fn() -> Result<Box<dyn AudioSource>, String> + Send + Sync + 'static,
+    ) -> Self {
+        self.audio = Some(Arc::new(open));
+        self
     }
 
     /// Lets viewers ask for each display separately: `list` says which exist, `open` makes
@@ -250,6 +285,13 @@ impl VideoHost {
         source: Box<dyn FrameSource>,
     ) -> Result<(String, ViewerGuard), String> {
         let encoder = H264Encoder::new(self.opts.fps, self.opts.bitrate_kbps)?;
+        // Sound only if this host has it and the viewer asked for it.
+        let audio = match &self.audio {
+            Some(open) if offer.lines().any(|l| l.starts_with("m=audio")) => {
+                Some((open()?, OpusEncoder::new(AUDIO_BITRATE_BPS)?))
+            }
+            _ => None,
+        };
 
         let mut media = MediaEngine::default();
         // H.264 only: the answer then offers exactly the codec we encode.
@@ -263,6 +305,18 @@ impl VideoHost {
                 RTPCodecType::Video,
             )
             .map_err(msg)?;
+        if audio.is_some() {
+            media
+                .register_codec(
+                    RTCRtpCodecParameters {
+                        capability: opus_capability(),
+                        payload_type: 111,
+                        ..Default::default()
+                    },
+                    RTPCodecType::Audio,
+                )
+                .map_err(msg)?;
+        }
         let registry = register_default_interceptors(Registry::new(), &mut media).map_err(msg)?;
         let mut settings = SettingEngine::default();
         settings.set_network_types(vec![NetworkType::Udp4]);
@@ -304,6 +358,28 @@ impl VideoHost {
             .await
             .map_err(msg)?;
 
+        // The audio sender is created first for the same reason as the video one.
+        let audio_track = Arc::new(TrackLocalStaticSample::new(
+            opus_capability(),
+            "audio".to_owned(),
+            "tether".to_owned(),
+        ));
+        let audio_transceiver = if audio.is_some() {
+            Some(
+                pc.add_transceiver_from_track(
+                    Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>,
+                    Some(RTCRtpTransceiverInit {
+                        direction: RTCRtpTransceiverDirection::Sendonly,
+                        send_encodings: vec![],
+                    }),
+                )
+                .await
+                .map_err(msg)?,
+            )
+        } else {
+            None
+        };
+
         pc.set_remote_description(
             RTCSessionDescription::offer(offer).map_err(|e| format!("bad offer: {e}"))?,
         )
@@ -333,16 +409,38 @@ impl VideoHost {
             });
         }
 
+        // The audio sender's RTCP has to be read too, or its reports pile up unread.
+        if let Some(t) = audio_transceiver {
+            let sender = t.sender().await;
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                while !stop.load(Ordering::Relaxed) {
+                    if sender.read_rtcp().await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
         // Start sending once the connection is up, stop when it is gone.
         {
             let stop = stop.clone();
             let started = Arc::new(AtomicBool::new(false));
             let pump = Mutex1::new(Some((source, encoder)));
+            let audio_pump = Mutex1::new(audio);
             let opts = self.opts.clone();
             pc.on_peer_connection_state_change(Box::new(move |state| {
                 match state {
                     RTCPeerConnectionState::Connected => {
                         if !started.swap(true, Ordering::SeqCst) {
+                            if let Some((source, encoder)) = audio_pump.take() {
+                                start_audio_pump(
+                                    source,
+                                    encoder,
+                                    audio_track.clone(),
+                                    stop.clone(),
+                                );
+                            }
                             if let Some((source, encoder)) = pump.take() {
                                 start_pump(
                                     source,
@@ -514,6 +612,63 @@ fn start_pump(
             }
         }
         stop.store(true, Ordering::SeqCst);
+    });
+}
+
+fn start_audio_pump(
+    mut source: Box<dyn AudioSource>,
+    mut encoder: OpusEncoder,
+    track: Arc<TrackLocalStaticSample>,
+    stop: Arc<AtomicBool>,
+) {
+    let (tx, mut rx) = mpsc::channel::<Bytes>(8);
+    let thread_stop = stop.clone();
+    let spawned = std::thread::Builder::new()
+        .name("tether-audio".into())
+        .spawn(move || {
+            while !thread_stop.load(Ordering::Relaxed) {
+                let frame = match source.next_frame() {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!("audio source stopped: {e}");
+                        break;
+                    }
+                };
+                match encoder.encode(&frame) {
+                    // Behind means the network is slower than the sound; skip rather than lag.
+                    Ok(data) => {
+                        if matches!(
+                            tx.try_send(Bytes::from(data)),
+                            Err(mpsc::error::TrySendError::Closed(_))
+                        ) {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("{e}");
+                        break;
+                    }
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("could not start the audio thread: {e}");
+        return;
+    }
+    tokio::spawn(async move {
+        while let Some(data) = rx.recv().await {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            let sample = Sample {
+                data,
+                duration: FRAME_DURATION,
+                ..Default::default()
+            };
+            if track.write_sample(&sample).await.is_err() {
+                break;
+            }
+        }
     });
 }
 

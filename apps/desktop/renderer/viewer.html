@@ -17,9 +17,13 @@
         <input id="control" type="checkbox" />
         Control this screen
       </label>
+      <label id="mute-label" class="check" hidden>
+        <input id="mute" type="checkbox" />
+        Mute
+      </label>
       <span id="msg" class="msg" role="status">Asking for the screen...</span>
     </div>
-    <video id="screen" autoplay muted playsinline tabindex="0"></video>
+    <video id="screen" autoplay playsinline tabindex="0"></video>
     <script src="viewer.js"></script>
   </body>
 </html>

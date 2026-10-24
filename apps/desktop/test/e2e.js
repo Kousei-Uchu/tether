@@ -35,7 +35,7 @@ async function run() {
   const js = (code) => win.webContents.executeJavaScript(code);
 
   const hostDev = new Device(hostHome, 'host-pc');
-  const handle = await hostDev.listen('127.0.0.1:0', { grant: ['view', 'input'] }, 'test-pattern', true, true);
+  const handle = await hostDev.listen('127.0.0.1:0', { grant: ['view', 'input'] }, 'test-pattern', true, true, 'tone');
 
   // Pair through the UI.
   await js(`document.getElementById('address').value = ${JSON.stringify(handle.address)}`);
@@ -87,6 +87,28 @@ async function run() {
   const second = await readCounter();
   if (!(second.n > first.n)) throw new Error(`video is not advancing: ${first.n} then ${second.n}`);
   console.log(`video ok: frame counter ${first.n} then ${second.n}`);
+
+  // The host also sends a test tone. Chromium counts the Opus packets it receives and
+  // decodes; there is no sound card here, so count rather than listen.
+  const audioStats = async () =>
+    win.webContents.executeJavaScript(`(async () => {
+      const out = { packets: 0, samples: 0, energy: 0 };
+      for (const r of (await viewer.getStats()).values()) {
+        if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+          out.packets = r.packetsReceived || 0;
+          out.samples = r.totalSamplesReceived || 0;
+          out.energy = r.totalAudioEnergy || 0;
+        }
+      }
+      return out;
+    })()`);
+  let a1 = await audioStats();
+  await sleep(1500);
+  let a2 = await audioStats();
+  if (!(a2.packets > a1.packets && a2.packets > 20)) {
+    throw new Error(`audio is not arriving: ${JSON.stringify(a1)} then ${JSON.stringify(a2)}`);
+  }
+  console.log(`audio ok: ${a1.packets} then ${a2.packets} packets, decoded samples ${a2.samples}, energy ${a2.energy.toFixed(3)}`);
 
   // Control the host. The host here injects into the very X display this window lives on, so
   // the events come back as real (trusted) browser events and prove the whole chain.
