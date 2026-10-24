@@ -12,6 +12,11 @@ The Rust interface it depends on is tested (from Python, against a real host, wi
 `scripts/ffi-check.sh`), but expect to fix some Swift compile errors the first time you build.
 Send them back and they get fixed.
 
+Every call the app makes into the Rust interface was checked by hand against the Swift
+bindings that UniFFI generates for it (names, argument labels, `async`, `throws` and types),
+and the problems that turned up are fixed. That is a read-through, not a compile: Swift
+itself and UIKit were not available.
+
 ## Build
 
 You need a Mac with Xcode 15 or newer, Rust (`rustup`) and XcodeGen (`brew install xcodegen`).

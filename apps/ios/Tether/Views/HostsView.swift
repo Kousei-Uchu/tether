@@ -31,6 +31,7 @@ struct HostsView: View {
                                 Text(host.address).font(.footnote).foregroundStyle(.secondary)
                             }
                         }
+                        .disabled(model.isBusy)
                         .swipeActions {
                             Button("Forget", role: .destructive) { model.forget(host) }
                         }
@@ -39,6 +40,7 @@ struct HostsView: View {
 
                 Section {
                     Button("Add a computer") { showPairing = true }
+                        .disabled(model.isBusy)
                 }
 
                 Section("This phone") {

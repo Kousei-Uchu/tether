@@ -49,6 +49,7 @@ struct KeyboardHost: UIViewRepresentable {
 
         func deleteBackward() { onKey?("Backspace") }
 
+        @discardableResult
         override func resignFirstResponder() -> Bool {
             let result = super.resignFirstResponder()
             onClosed?()

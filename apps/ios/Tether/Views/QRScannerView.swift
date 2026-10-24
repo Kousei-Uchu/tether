@@ -68,7 +68,15 @@ struct QRScannerView: UIViewControllerRepresentable {
 
         override func viewWillDisappear(_ animated: Bool) {
             super.viewWillDisappear(animated)
-            if session.isRunning { session.stopRunning() }
+            stopSession()
+        }
+
+        /// `stopRunning` blocks until the camera has stopped, so never call it on the main thread.
+        private func stopSession() {
+            let session = session
+            DispatchQueue.global(qos: .userInitiated).async {
+                if session.isRunning { session.stopRunning() }
+            }
         }
 
         func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject], from connection: AVCaptureConnection) {
@@ -76,7 +84,7 @@ struct QRScannerView: UIViewControllerRepresentable {
                   let text = (objects.first as? AVMetadataMachineReadableCodeObject)?.stringValue,
                   text.hasPrefix("tether://") else { return }
             delivered = true
-            session.stopRunning()
+            stopSession()
             onCode?(text)
         }
     }

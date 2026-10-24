@@ -42,11 +42,24 @@ final class AppModel: ObservableObject {
     private var flushScheduled = false
 
     init() {
-        open()
+        openDevice()
     }
 
     var phoneName: String { device?.name() ?? "this phone" }
     var fingerprint: String { device?.fingerprint() ?? "" }
+    /// True while pairing or connecting, so a second tap cannot start a second session.
+    var isBusy: Bool {
+        if case .working = phase { return true }
+        return false
+    }
+
+    /// The text to show for an error. The generated `TetherError` describes itself as a raw
+    /// enum dump, but the Rust side already wrote `message` for the person, so use that.
+    static func readable(_ error: Error) -> String {
+        if case TetherError.Failed(let message) = error { return message }
+        return error.localizedDescription
+    }
+
     var mayControl: Bool { permissions.contains("input") }
     var mayUseMedia: Bool { permissions.contains("media") }
 
@@ -59,13 +72,13 @@ final class AppModel: ObservableObject {
 
     private var hostsFile: URL { supportDirectory.appendingPathComponent("hosts.json") }
 
-    private func open() {
+    private func openDevice() {
         do {
             try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
             device = try Device(home: supportDirectory.path, name: UIDevice.current.name)
             loadHosts()
         } catch {
-            startupError = error.localizedDescription
+            startupError = AppModel.readable(error)
         }
     }
 
@@ -91,7 +104,7 @@ final class AppModel: ObservableObject {
             let info = try parsePairingLink(link: text)
             await pair(address: info.address, code: info.code)
         } catch {
-            phase = .failed(error.localizedDescription)
+            phase = .failed(AppModel.readable(error))
         }
     }
 
@@ -106,7 +119,7 @@ final class AppModel: ObservableObject {
             saveHosts()
             await connect(to: host)
         } catch {
-            phase = .failed(error.localizedDescription)
+            phase = .failed(AppModel.readable(error))
         }
     }
 
@@ -137,7 +150,7 @@ final class AppModel: ObservableObject {
             phase = .connected
             startPipeline(for: c)
         } catch {
-            phase = .failed(error.localizedDescription)
+            phase = .failed(AppModel.readable(error))
         }
     }
 
@@ -170,7 +183,7 @@ final class AppModel: ObservableObject {
                     self.permissions = c.permissions()
                     if let latest = await c.takeNotices().last { self.notice = latest }
                 } catch {
-                    self.lost(error)
+                    self.lost(error, from: c)
                     return
                 }
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -186,17 +199,19 @@ final class AppModel: ObservableObject {
                 do {
                     try await c.sendInput(action: action)
                 } catch {
-                    self?.lost(error)
+                    self?.lost(error, from: c)
                     return
                 }
             }
         }
     }
 
-    private func lost(_ error: Error) {
-        guard phase == .connected else { return }
+    /// The session `c` failed. Only acts if `c` is still the open one: a late error from a
+    /// session that was already replaced must not tear down its successor.
+    private func lost(_ error: Error, from c: Connection) {
+        guard phase == .connected, connection === c else { return }
         disconnect()
-        phase = .failed(error.localizedDescription)
+        phase = .failed(AppModel.readable(error))
     }
 
     // MARK: - Input

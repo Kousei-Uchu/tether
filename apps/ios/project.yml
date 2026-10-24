@@ -7,7 +7,9 @@ options:
     iOS: "17.0"
 settings:
   base:
-    SWIFT_VERSION: "5.9"
+    # The Swift 5 language mode, which any Swift 5.x or 6 compiler accepts. (This setting is the
+    # language mode, not the compiler version, so it is not "5.9".)
+    SWIFT_VERSION: "5.0"
     # Set your own team in Xcode (Signing & Capabilities) to run on a real phone.
     CODE_SIGN_STYLE: Automatic
 targets:
