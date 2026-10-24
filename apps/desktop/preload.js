@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('tether', {
   sendClipboard: () => call('clipboard:send'),
   getClipboard: () => call('clipboard:get'),
   listDisplays: () => call('displays:list'),
+  wake: (target) => call('wake:send', target),
   startHost: (options) => call('host:start', options),
   stopHost: () => call('host:stop'),
   pollHost: () => call('host:poll'),

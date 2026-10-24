@@ -342,8 +342,11 @@ impl Device {
     /// `video` (`"test-pattern"`, `"screen"` or `"screen:<id>"`) to let permitted devices watch a stream, and
     /// `input` to let devices with the `input` permission control this computer's mouse and
     /// keyboard. Remote control is off unless the host turns it on here. `audio` (`"system"`
-    /// or `"tone"`) adds sound to the video; it needs `video`. `clipboard` does the
+    /// or `"tone"`) adds sound to the video; it needs `video`. `wake` makes this device a
+    /// wake relay: each entry is `name=MAC` or `name=MAC@broadcast`, and devices with the
+    /// `power` permission can then wake those computers. `clipboard` does the
     /// same for devices with the `files` permission and this computer's clipboard.
+    #[allow(clippy::too_many_arguments)]
     #[napi]
     pub async fn listen(
         &self,
@@ -353,6 +356,7 @@ impl Device {
         input: Option<bool>,
         clipboard: Option<bool>,
         audio: Option<String>,
+        wake: Option<Vec<String>>,
     ) -> Result<HostHandle> {
         let offer = match pairing {
             None => None,
@@ -377,6 +381,12 @@ impl Device {
                 Some(Arc::new(host))
             }
         };
+        let relay: Option<Arc<dyn tether_core::wake::WakeProvider>> = match wake {
+            Some(specs) if !specs.is_empty() => Some(Arc::new(
+                tether_core::wake::WolRelay::from_specs(&specs).map_err(err)?,
+            )),
+            _ => None,
+        };
         let code = offer.as_ref().map(|o| o.display_code());
         let host = Arc::new(HostConfig {
             identity: self.identity.clone(),
@@ -387,7 +397,7 @@ impl Device {
             input: input
                 .unwrap_or(false)
                 .then(|| Arc::new(EnigoInput) as Arc<dyn tether_core::input::InputProvider>),
-            wake: None,
+            wake: relay,
             clipboard: clipboard.unwrap_or(false).then(|| {
                 Arc::new(SystemClipboard::new())
                     as Arc<dyn tether_core::clipboard::ClipboardProvider>
@@ -480,6 +490,33 @@ impl Connection {
         *self.permissions.lock().expect("permissions lock") = names(session.permissions);
         match result {
             Ok(rtt) => Ok(rtt.as_secs_f64() * 1000.0),
+            Err(e) => {
+                *guard = None;
+                Err(err(e))
+            }
+        }
+    }
+
+    /// Asks the host, which must be a wake relay, to wake the computer it knows as `target`.
+    /// Needs the `power` permission. Resolves with the host's answer, which says what it did
+    /// or why it would not.
+    #[napi]
+    pub async fn wake(&self, target: String) -> Result<String> {
+        let nonce = self.nonce.fetch_add(1, Ordering::Relaxed);
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
+        let outcome = async {
+            session.wake(&target).await?;
+            // The answer arrives as a notice, ahead of the reply to this ping.
+            session.ping(nonce).await?;
+            Ok::<_, tether_core::session::SessionError>(session.take_notices())
+        }
+        .await;
+        match outcome {
+            Ok(notices) => notices
+                .last()
+                .cloned()
+                .ok_or_else(|| err("the host did not answer")),
             Err(e) => {
                 *guard = None;
                 Err(err(e))

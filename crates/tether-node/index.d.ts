@@ -65,6 +65,8 @@ export class Device {
     clipboard?: boolean | null,
     /** Adds sound to the video: "system" (what the computer plays) or "tone". Needs video. */
     audio?: string | null,
+    /** Makes this a wake relay: each entry is "name=MAC" or "name=MAC@broadcast". */
+    wake?: string[] | null,
   ): Promise<HostHandle>;
 }
 
@@ -84,6 +86,8 @@ export class Connection {
   takeNotices(): Promise<string[]>;
   /** Sends a WebRTC offer, resolves with the host's answer. Needs the "view" permission. */
   requestVideo(offer: string): Promise<string>;
+  /** Asks a wake relay to wake the computer it knows as `target`. Needs "power". Resolves with its answer. */
+  wake(target: string): Promise<string>;
   /** The displays the host can stream one by one. Needs the "view" permission. */
   listRemoteDisplays(): Promise<Display[]>;
   /** Like requestVideo, for one display. Each display has its own connection. */

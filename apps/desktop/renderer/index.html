@@ -88,6 +88,14 @@
               <button data-key="AudioVolumeUp" aria-label="Volume up" title="Volume up">&#128266;</button>
             </div>
             <p id="media-msg" class="hint" hidden>Media keys act on the other computer when it has remote control turned on.</p>
+            <div id="wake-row" class="row" hidden>
+              <label class="grow">
+                Wake a computer through this host
+                <input id="wake-target" type="text" placeholder="name it knows, for example desk" spellcheck="false" />
+              </label>
+              <button id="wake-send">Wake</button>
+            </div>
+            <p id="wake-msg" class="msg" role="status"></p>
             <div id="control-row" hidden>
               <label class="check">
                 <input id="control" type="checkbox" />
@@ -131,6 +139,11 @@
           <label class="check">
             <input id="allow-clipboard" type="checkbox" />
             Allow clipboard sharing: devices that may use files can read and replace the text on this computer's clipboard
+          </label>
+          <label>
+            Computers this device can wake, one per line, as name=MAC (or name=MAC@broadcast).
+            Devices that may use power can then wake them.
+            <textarea id="wake-targets" rows="2" spellcheck="false" placeholder="desk=aa:bb:cc:dd:ee:ff@192.168.1.255"></textarea>
           </label>
           <fieldset id="grant-set">
             <legend>A device that pairs with the code may</legend>

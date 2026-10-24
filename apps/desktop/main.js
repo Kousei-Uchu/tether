@@ -240,7 +240,14 @@ function registerIpc() {
     return { copied: true, message: 'Copied the other computer\'s clipboard to this one.' };
   });
 
-  handle('host:start', async ({ bind, pairing, grant, video, audio, input, clipboard: shareClipboard }) => {
+  handle('wake:send', async (target) => {
+    if (!connection) throw new Error('Not connected.');
+    const name = String(target ?? '').trim();
+    if (!name) throw new Error('Type the name of the computer to wake.');
+    return connection.wake(name);
+  });
+
+  handle('host:start', async ({ bind, pairing, grant, video, audio, input, clipboard: shareClipboard, wake }) => {
     if (host) throw new Error('Already accepting connections.');
     const options = pairing ? { grant: validPermissions(grant ?? ['view']) } : null;
     host = await device.listen(
@@ -250,6 +257,12 @@ function registerIpc() {
       Boolean(input),
       Boolean(shareClipboard),
       video && audio ? 'system' : null,
+      Array.isArray(wake)
+        ? wake
+            .map((line) => String(line).trim())
+            .filter(Boolean)
+            .slice(0, 20)
+        : [],
     );
     hostLog = [];
     hostLinks = await buildLinks();

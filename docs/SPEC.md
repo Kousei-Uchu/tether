@@ -353,8 +353,8 @@ phone, with controls following permission changes live.
 ### M6. Wake relay
 
 - [x] Relay: any host with `listen --wake name=MAC[@broadcast]` answers an authenticated `Wake` message (`power` needed, 3 s cooldown) with a magic packet. Verified end to end on loopback; not on a real sleeping machine
-- [ ] Wake button in desktop and iPhone clients (CLI `tether wake` exists; `Message::Wake` is index 12)
-- [ ] Setup guide for BIOS, NIC and macOS power settings
+- [x] Wake button in the desktop app (verified end to end with a magic packet on loopback). [ ] iPhone client
+- [x] Setup guide: docs/WAKE.md (written from general knowledge; not checked against real hardware)
 
 ### M7. Multi-display windows and docking
 

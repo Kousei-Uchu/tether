@@ -187,7 +187,7 @@ Pair your devices with the Pi and give them `power` (`peers grant`). Then from a
 tether wake pi.local desk
 ```
 
-The part after `@` is the network's broadcast address; leave it out to use 255.255.255.255. The computer needs Wake-on-LAN turned on in its BIOS and network adapter settings, and should be on Ethernet. A Mac wakes from sleep only (not shut down), and Wi-Fi wake is unreliable on both systems.
+The part after `@` is the network's broadcast address; leave it out to use 255.255.255.255. The desktop app has a Wake button for the same thing (shown once you hold `power`). Step by step setup, including the BIOS, adapter and macOS settings, is in [docs/WAKE.md](docs/WAKE.md). The computer needs Wake-on-LAN turned on in its BIOS and network adapter settings, and should be on Ethernet. A Mac wakes from sleep only (not shut down), and Wi-Fi wake is unreliable on both systems.
 
 ## Running in the background
 

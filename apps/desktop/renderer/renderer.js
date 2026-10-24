@@ -254,6 +254,18 @@ screen.addEventListener('keyup', (e) => {
 screen.addEventListener('blur', () => releaseAll());
 window.addEventListener('blur', () => releaseAll());
 
+$('wake-send').addEventListener('click', async () => {
+  say('wake-msg', 'Sending...');
+  $('wake-send').disabled = true;
+  try {
+    say('wake-msg', await window.tether.wake($('wake-target').value));
+  } catch (e) {
+    say('wake-msg', e.message, true);
+  } finally {
+    $('wake-send').disabled = false;
+  }
+});
+
 $('show-screen').addEventListener('click', startVideo);
 $('open-viewers').addEventListener('click', async () => {
   say('screen-msg', 'Opening the screens...');
@@ -296,6 +308,7 @@ function showConnection(state) {
   const mayMedia = state.connected && state.permissions.includes('media');
   const mayFiles = state.connected && state.permissions.includes('files');
   $('clipboard-box').hidden = !mayFiles;
+  $('wake-row').hidden = !(state.connected && state.permissions.includes('power'));
   $('media-row').hidden = !mayMedia;
   $('media-msg').hidden = !mayMedia;
   $('control').disabled = !mayControlNow;
@@ -452,6 +465,7 @@ $('host-start').addEventListener('click', () =>
       video: $('video').checked ? $('video-source').value : null,
       audio: $('video').checked && $('share-audio').checked,
       input: $('allow-input').checked,
+      wake: $('wake-targets').value.split('\n'),
       clipboard: $('allow-clipboard').checked,
       grant: chosenGrant(),
     });

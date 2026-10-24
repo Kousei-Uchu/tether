@@ -35,7 +35,19 @@ async function run() {
   const js = (code) => win.webContents.executeJavaScript(code);
 
   const hostDev = new Device(hostHome, 'host-pc');
-  const handle = await hostDev.listen('127.0.0.1:0', { grant: ['view', 'input'] }, 'test-pattern', true, true, 'tone');
+  // A socket standing in for the sleeping computer's network card.
+  const udp = require('node:dgram').createSocket('udp4');
+  const wakePacket = new Promise((resolve) => udp.once('message', resolve));
+  await new Promise((resolve) => udp.bind(0, '127.0.0.1', resolve));
+  const handle = await hostDev.listen(
+    '127.0.0.1:0',
+    { grant: ['view', 'input'] },
+    'test-pattern',
+    true,
+    true,
+    'tone',
+    [`desk=aa:bb:cc:dd:ee:ff@127.0.0.1:${udp.address().port}`],
+  );
 
   // Pair through the UI.
   await js(`document.getElementById('address').value = ${JSON.stringify(handle.address)}`);
@@ -247,6 +259,28 @@ async function run() {
   await waitFor(win, `document.getElementById('clip-msg').classList.contains('error')`, 'empty clipboard message', 8000);
   hostDev.revoke(fp, ['files']);
   await waitFor(win, `document.getElementById('clipboard-box').hidden`, 'clipboard buttons to hide after revoke', 8000);
+
+  // Wake button: hidden without `power`, shown once granted, sends a real magic packet,
+  // and a name the relay does not know is explained.
+  if (!(await js(`document.getElementById('wake-row').hidden`))) throw new Error('wake row shown without power');
+  hostDev.grant(fp, ['power']);
+  await waitFor(win, `!document.getElementById('wake-row').hidden`, 'wake row after the power grant', 8000);
+  await js(`document.getElementById('wake-target').value = 'desk'`);
+  await js(`document.getElementById('wake-send').click()`);
+  await waitFor(win, `document.getElementById('wake-msg').textContent.includes('Sent a wake signal to desk')`, 'wake answer', 8000);
+  const packet = await Promise.race([wakePacket, sleep(5000).then(() => null)]);
+  const mac = Buffer.from('aabbccddeeff', 'hex');
+  if (!packet || packet.length !== 102 || !packet.subarray(0, 6).equals(Buffer.alloc(6, 255)) || !packet.subarray(96).equals(mac)) {
+    throw new Error('the magic packet did not arrive intact');
+  }
+  console.log('wake ok: magic packet arrived');
+  await sleep(3300); // the host allows one wake every three seconds
+  await js(`document.getElementById('wake-target').value = 'laptop'`);
+  await js(`document.getElementById('wake-send').click()`);
+  await waitFor(win, `document.getElementById('wake-msg').textContent.includes('does not know')`, 'unknown name answer', 8000);
+  hostDev.revoke(fp, ['power']);
+  await waitFor(win, `document.getElementById('wake-row').hidden`, 'wake row to hide after revoke', 8000);
+  udp.close();
 
   // Host from the UI too.
   await js(`document.getElementById('bind').value = '127.0.0.1:0'`);
