@@ -88,6 +88,10 @@ enum Cmd {
         /// hold the power permission can then wake them with `tether wake`.
         #[arg(long = "wake", value_name = "NAME=MAC[@BROADCAST]")]
         wake: Vec<String>,
+        /// Share this folder with paired devices that hold the files permission: they can
+        /// list it, download from it and upload into it, and reach nothing outside it.
+        #[arg(long, value_name = "FOLDER")]
+        share: Option<std::path::PathBuf>,
         /// Do not announce this device on the local network. Other devices will then need
         /// its address to connect.
         #[arg(long)]
@@ -106,6 +110,12 @@ enum Cmd {
         addr: String,
         /// The name the relay knows the computer by.
         target: String,
+    },
+    /// Browse, download and upload files in a paired host's shared folder. Needs the files
+    /// permission and a host started with `--share`.
+    Files {
+        #[command(subcommand)]
+        action: FilesAction,
     },
     /// Copy text to or from the clipboard of a paired host that allows it.
     Clip {
@@ -146,6 +156,32 @@ enum Cmd {
     Peers {
         #[command(subcommand)]
         action: PeersCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum FilesAction {
+    /// List a folder in the host's shared folder.
+    Ls {
+        /// The host's address, `host` or `host:port`.
+        addr: String,
+        /// A folder inside the shared folder. Empty for the shared folder itself.
+        #[arg(default_value = "")]
+        path: String,
+    },
+    /// Download a file into the current folder, or to `dest`. Will not replace a file.
+    Get {
+        addr: String,
+        /// The file's path inside the shared folder.
+        remote: String,
+        dest: Option<std::path::PathBuf>,
+    },
+    /// Upload a file. The host never replaces a file, so it may save it under another name.
+    Put {
+        addr: String,
+        local: std::path::PathBuf,
+        /// Where to save it in the shared folder. Defaults to the file's own name.
+        remote: Option<String>,
     },
 }
 
@@ -309,6 +345,7 @@ async fn run() -> Result<()> {
             input,
             clipboard,
             wake,
+            share,
             no_advertise,
             confirm,
             no_verify,
@@ -324,6 +361,7 @@ async fn run() -> Result<()> {
                 input,
                 clipboard,
                 wake,
+                share,
                 !no_advertise,
                 Terminal::new(confirm, !no_verify),
             )
@@ -333,6 +371,7 @@ async fn run() -> Result<()> {
         Cmd::Quick { target, pings } => quick(ctx, &target, pings).await,
         Cmd::Wake { addr, target } => wake_via(ctx, &addr, &target).await,
         Cmd::Clip { action } => clip(ctx, action).await,
+        Cmd::Files { action } => files(ctx, action).await,
         Cmd::Pair {
             addr,
             code,
@@ -433,6 +472,7 @@ async fn listen(
     input: bool,
     clipboard: bool,
     wake: Vec<String>,
+    share: Option<std::path::PathBuf>,
     advertise: bool,
     terminal: Arc<Terminal>,
 ) -> Result<()> {
@@ -481,6 +521,13 @@ async fn listen(
             Arc::new(tether_clipboard::SystemClipboard::new())
                 as Arc<dyn tether_core::clipboard::ClipboardProvider>
         }),
+        files: match &share {
+            Some(dir) => Some(Arc::new(
+                tether_core::files::FileShare::new(dir)
+                    .with_context(|| format!("cannot share {}", dir.display()))?,
+            )),
+            None => None,
+        },
     });
 
     let listener = TcpListener::bind(&bind)
@@ -829,4 +876,102 @@ impl Confirmer for Terminal {
             ask_yes_no("Does the other device show the same? [y/N] ".to_owned()).await
         })
     }
+}
+
+fn human(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+async fn files(ctx: Ctx, action: FilesAction) -> Result<()> {
+    let addr = match &action {
+        FilesAction::Ls { addr, .. } | FilesAction::Get { addr, .. } | FilesAction::Put { addr, .. } => {
+            addr.clone()
+        }
+    };
+    // Decide where a download goes before connecting, so a mistake costs no time.
+    let get_dest = match &action {
+        FilesAction::Get { remote, dest, .. } => {
+            let dest = match dest {
+                Some(d) => d.clone(),
+                None => {
+                    let name = remote.rsplit(['/', '\\']).find(|p| !p.is_empty());
+                    std::path::PathBuf::from(name.context("say which file to download")?)
+                }
+            };
+            if dest.exists() {
+                bail!("{} already exists; choose another destination", dest.display());
+            }
+            Some(dest)
+        }
+        _ => None,
+    };
+    let mut trust = TrustStore::load(ctx.paths.trust_file())?;
+    let stream = dial(&addr).await?;
+    let Outcome::Authenticated(mut session) = connect(
+        stream,
+        &ctx.identity,
+        &mut trust,
+        &ctx.name,
+        ClientMode::Connect,
+    )
+    .await?
+    else {
+        bail!("unexpected pairing result");
+    };
+    let mut shown = std::time::Instant::now();
+    let mut progress = |done: u64, total: u64| {
+        if shown.elapsed() > Duration::from_millis(200) || done == total {
+            shown = std::time::Instant::now();
+            eprint!("\r{} of {}   ", human(done), human(total));
+        }
+        true
+    };
+    let result: Result<()> = async {
+        match action {
+            FilesAction::Ls { path, .. } => {
+                for e in session.list_files(&path).await? {
+                    if e.dir {
+                        println!("{}/", e.name);
+                    } else {
+                        println!("{:>10}  {}", human(e.size), e.name);
+                    }
+                }
+            }
+            FilesAction::Get { remote, .. } => {
+                let dest = get_dest.expect("set for get");
+                let size = session.download_file(1, &remote, &dest, &mut progress).await?;
+                eprintln!();
+                println!("saved {} ({})", dest.display(), human(size));
+            }
+            FilesAction::Put { local, remote, .. } => {
+                let remote = match remote {
+                    Some(r) => r,
+                    None => local
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(str::to_owned)
+                        .context("that path has no file name")?,
+                };
+                let saved = session.upload_file(1, &local, &remote, &mut progress).await?;
+                eprintln!();
+                println!("saved on the host as {saved}");
+            }
+        }
+        Ok(())
+    }
+    .await;
+    // A refusal leaves the session fine; anything else already ended it.
+    let _ = session.bye("done").await;
+    result
 }

@@ -65,6 +65,7 @@ final class AppModel: ObservableObject {
     }
 
     var mayControl: Bool { permissions.contains("input") }
+    var mayFiles: Bool { permissions.contains("files") }
     var mayUseMedia: Bool { permissions.contains("media") }
 
     // MARK: - Setup
@@ -140,6 +141,27 @@ final class AppModel: ObservableObject {
             phase = .failed(AppModel.readable(error))
         }
     }
+
+    // MARK: - Files
+
+    func listFiles(_ path: String) async throws -> [RemoteFile] {
+        guard let c = connection else { throw AppModelError.notConnected }
+        return try await c.listFiles(path: path)
+    }
+
+    func downloadFile(_ remote: String, to url: URL) async throws -> UInt64 {
+        guard let c = connection else { throw AppModelError.notConnected }
+        return try await c.downloadFile(remote: remote, destPath: url.path)
+    }
+
+    func uploadFile(_ url: URL, as remote: String) async throws -> String {
+        guard let c = connection else { throw AppModelError.notConnected }
+        return try await c.uploadFile(srcPath: url.path, remote: remote)
+    }
+
+    func transferProgress() -> TransferProgress? { connection?.transferProgress() }
+
+    func cancelTransfer() { connection?.cancelTransfer() }
 
     /// The person's answer to the symbol comparison.
     func answerVerify(_ matches: Bool) {
@@ -335,4 +357,10 @@ final class AppModel: ObservableObject {
         if character == " " { return "Space" }
         return nil
     }
+}
+
+enum AppModelError: LocalizedError {
+    case notConnected
+
+    var errorDescription: String? { "Not connected." }
 }

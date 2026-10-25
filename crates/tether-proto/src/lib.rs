@@ -7,16 +7,18 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Bumped on any incompatible wire change. Peers must match exactly for now.
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 pub const DEFAULT_PORT: u16 = 7420;
 /// Upper bound for one decoded message. Larger messages are rejected by the channel.
 pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 /// Longest clipboard text a host will accept or send, in bytes of UTF-8. Anything larger is
 /// refused on both sides rather than truncated, so a paste never arrives cut short.
 pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
+/// Bytes of file in one `FileData` message. Senders use this size; receivers refuse more.
+pub const FILE_CHUNK_BYTES: usize = 32 * 1024;
 pub const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 /// Mixed into the Noise handshake so a version mismatch fails the handshake itself.
-pub const PROLOGUE: &[u8] = b"tether/6";
+pub const PROLOGUE: &[u8] = b"tether/7";
 
 pub type Proof = [u8; 32];
 
@@ -457,6 +459,66 @@ pub enum Message {
     VerifyDecision {
         accepted: bool,
     },
+    /// Client to host: list a folder inside the shared folder (empty path is the folder
+    /// itself). Needs `files` and a host that shares a folder. Answered with `FileEntries`.
+    FileList {
+        path: String,
+    },
+    /// Host to client: the answer to `FileList`. `error` says why `entries` is empty.
+    FileEntries {
+        path: String,
+        entries: Vec<FileEntry>,
+        error: Option<String>,
+    },
+    /// Client to host: send the file at `path`. Answered with `FileOk` then `FileData`
+    /// messages and a `FileEnd`, or with `FileFail`.
+    FileGet {
+        id: u32,
+        path: String,
+    },
+    /// Client to host: I am about to send `size` bytes to save as `name`. Answered with
+    /// `FileOk` or `FileFail`; then the client sends `FileData` and `FileEnd`, and the host
+    /// answers with `FileDone` or `FileFail`.
+    FilePut {
+        id: u32,
+        name: String,
+        size: u64,
+    },
+    /// The request with this `id` was accepted. For `FileGet`, `size` is the file's size.
+    FileOk {
+        id: u32,
+        size: u64,
+    },
+    /// One piece of a file, at most `FILE_CHUNK_BYTES`, in order.
+    FileData {
+        id: u32,
+        data: Vec<u8>,
+    },
+    /// The last message of a file: the SHA-256 of everything sent.
+    FileEnd {
+        id: u32,
+        sha256: [u8; 32],
+    },
+    /// Host to client: an upload is saved. `name` is what it was saved as, which differs from
+    /// the name asked for if that was taken.
+    FileDone {
+        id: u32,
+        name: String,
+    },
+    /// Either way: refuse or stop the transfer with this `id`. The reason is for the person.
+    FileFail {
+        id: u32,
+        reason: String,
+    },
+}
+
+/// One line of a folder listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileEntry {
+    pub name: String,
+    /// Bytes; 0 for a folder.
+    pub size: u64,
+    pub dir: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -552,6 +614,39 @@ mod tests {
             assert_eq!(bytes[0], index);
             assert_eq!(decode(&bytes).unwrap(), m);
         }
+    }
+
+    #[test]
+    fn file_messages_are_appended_in_order() {
+        let msgs = [
+            (23, Message::FileList { path: "a".into() }),
+            (
+                24,
+                Message::FileEntries {
+                    path: String::new(),
+                    entries: vec![FileEntry { name: "x".into(), size: 3, dir: false }],
+                    error: None,
+                },
+            ),
+            (25, Message::FileGet { id: 1, path: "a".into() }),
+            (26, Message::FilePut { id: 1, name: "a".into(), size: 9 }),
+            (27, Message::FileOk { id: 1, size: 9 }),
+            (28, Message::FileData { id: 1, data: vec![1, 2, 3] }),
+            (29, Message::FileEnd { id: 1, sha256: [4; 32] }),
+            (30, Message::FileDone { id: 1, name: "a".into() }),
+            (31, Message::FileFail { id: 1, reason: "no".into() }),
+        ];
+        for (index, m) in msgs {
+            let bytes = encode(&m).unwrap();
+            assert_eq!(bytes[0], index);
+            assert_eq!(decode(&bytes).unwrap(), m);
+        }
+    }
+
+    #[test]
+    fn a_full_file_chunk_fits_one_message() {
+        let m = Message::FileData { id: u32::MAX, data: vec![0xAB; FILE_CHUNK_BYTES] };
+        assert!(encode(&m).unwrap().len() < MAX_MESSAGE_LEN);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::{
     collections::VecDeque,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex as StdMutex,
     },
     time::Duration,
@@ -19,6 +19,7 @@ use std::{
 use tether_clipboard::SystemClipboard;
 use tether_core::{
     discovery,
+    files::FileShare,
     identity::Identity,
     link::{with_default_port, PairingLink},
     pairing::PairingOffer,
@@ -26,7 +27,10 @@ use tether_core::{
     permissions::PermissionSet,
     proto::{InputEvent, Key, MouseButton, Permission},
     prompt::{PromptQueue, QueueConfirmer},
-    session::{accept_with, connect, connect_with, ClientMode, Confirmer, HostConfig, Outcome, Session},
+    session::{
+        accept_with, connect, connect_with, ClientMode, Confirmer, HostConfig, Outcome, Session,
+        SessionError,
+    },
     trust::TrustStore,
 };
 use tether_input::EnigoInput;
@@ -134,6 +138,43 @@ pub struct NearbyDevice {
     pub paired: bool,
     /// False if it speaks a different protocol version and so cannot connect.
     pub compatible: bool,
+}
+
+#[napi(object)]
+pub struct FileEntryJs {
+    pub name: String,
+    /// Bytes; 0 for a folder.
+    pub size: f64,
+    pub dir: bool,
+}
+
+/// The file transfer running on a connection, if any.
+#[napi(object)]
+pub struct TransferStatus {
+    pub active: bool,
+    pub upload: bool,
+    pub name: String,
+    pub done: f64,
+    pub total: f64,
+}
+
+#[derive(Default)]
+struct Progress {
+    active: AtomicBool,
+    upload: AtomicBool,
+    cancel: AtomicBool,
+    done: AtomicU64,
+    total: AtomicU64,
+    name: StdMutex<String>,
+}
+
+/// Marks a transfer as finished when dropped, however it ends.
+struct Running(Arc<Progress>);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.active.store(false, Ordering::Relaxed);
+    }
 }
 
 #[napi(object)]
@@ -543,7 +584,14 @@ impl Device {
         advertise: Option<bool>,
         confirm: Option<bool>,
         verify: Option<bool>,
+        share: Option<String>,
     ) -> Result<HostHandle> {
+        let files = match share.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(dir) => Some(Arc::new(
+                FileShare::new(dir).map_err(|e| err(format!("cannot share that folder: {e}")))?,
+            )),
+            None => None,
+        };
         let offer = match pairing {
             None => None,
             Some(opts) => {
@@ -588,6 +636,7 @@ impl Device {
                 Arc::new(SystemClipboard::new())
                     as Arc<dyn tether_core::clipboard::ClipboardProvider>
             }),
+            files,
         });
 
         let listener = TcpListener::bind(&bind)
@@ -663,6 +712,7 @@ pub struct Connection {
     permissions: Arc<StdMutex<Vec<String>>>,
     nonce: AtomicU64,
     address: String,
+    progress: Arc<Progress>,
 }
 
 impl Connection {
@@ -680,12 +730,123 @@ impl Connection {
             permissions: Arc::new(StdMutex::new(perms)),
             nonce: AtomicU64::new(0),
             address,
+            progress: Arc::new(Progress::default()),
+        }
+    }
+}
+
+impl Connection {
+    fn start_transfer(&self, name: &str, upload: bool) -> Running {
+        let p = &self.progress;
+        p.cancel.store(false, Ordering::Relaxed);
+        p.done.store(0, Ordering::Relaxed);
+        p.total.store(0, Ordering::Relaxed);
+        p.upload.store(upload, Ordering::Relaxed);
+        *p.name.lock().expect("name lock") = name.to_owned();
+        p.active.store(true, Ordering::Relaxed);
+        Running(p.clone())
+    }
+
+    /// A refusal from the host leaves the connection usable. Anything else has ended it.
+    fn settle<T>(
+        &self,
+        guard: &mut Option<Session<TcpStream>>,
+        result: std::result::Result<T, SessionError>,
+    ) -> Result<T> {
+        match result {
+            Ok(v) => Ok(v),
+            Err(SessionError::Files(message)) => Err(err(message)),
+            Err(e) => {
+                *guard = None;
+                Err(err(e))
+            }
         }
     }
 }
 
 #[napi]
 impl Connection {
+    /// Lists a folder in the host's shared folder (empty for the shared folder itself).
+    /// Needs the `files` permission and a host started with a shared folder.
+    #[napi]
+    pub async fn list_files(&self, path: String) -> Result<Vec<FileEntryJs>> {
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
+        let result = session.list_files(&path).await;
+        *self.permissions.lock().expect("permissions lock") = names(session.permissions);
+        let entries = self.settle(&mut guard, result)?;
+        Ok(entries
+            .into_iter()
+            .map(|e| FileEntryJs {
+                name: e.name,
+                size: e.size as f64,
+                dir: e.dir,
+            })
+            .collect())
+    }
+
+    /// Downloads `remote` from the host's shared folder to the local path `dest`, replacing
+    /// what is there once the whole file has arrived intact. Resolves with the size in bytes.
+    /// Watch `transferStatus` for progress; `cancelTransfer` stops it.
+    #[napi]
+    pub async fn download_file(&self, remote: String, dest: String) -> Result<f64> {
+        let id = self.nonce.fetch_add(1, Ordering::Relaxed) as u32;
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
+        let _run = self.start_transfer(&remote, false);
+        let p = self.progress.clone();
+        let result = session
+            .download_file(id, &remote, std::path::Path::new(&dest), &mut |done, total| {
+                p.done.store(done, Ordering::Relaxed);
+                p.total.store(total, Ordering::Relaxed);
+                !p.cancel.load(Ordering::Relaxed)
+            })
+            .await;
+        *self.permissions.lock().expect("permissions lock") = names(session.permissions);
+        self.settle(&mut guard, result).map(|n| n as f64)
+    }
+
+    /// Uploads the local file `src` into the host's shared folder as `remote` (a name, or a
+    /// path into a folder that exists there). The host never replaces a file, so it may save
+    /// it under another name; resolves with the name it used.
+    #[napi]
+    pub async fn upload_file(&self, src: String, remote: String) -> Result<String> {
+        let id = self.nonce.fetch_add(1, Ordering::Relaxed) as u32;
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| err("connection is closed"))?;
+        let _run = self.start_transfer(&remote, true);
+        let p = self.progress.clone();
+        let result = session
+            .upload_file(id, std::path::Path::new(&src), &remote, &mut |done, total| {
+                p.done.store(done, Ordering::Relaxed);
+                p.total.store(total, Ordering::Relaxed);
+                !p.cancel.load(Ordering::Relaxed)
+            })
+            .await;
+        *self.permissions.lock().expect("permissions lock") = names(session.permissions);
+        self.settle(&mut guard, result)
+    }
+
+    /// How far the running transfer has got. Does not wait for the connection, so it is safe
+    /// to poll while a transfer is under way.
+    #[napi]
+    pub fn transfer_status(&self) -> TransferStatus {
+        let p = &self.progress;
+        TransferStatus {
+            active: p.active.load(Ordering::Relaxed),
+            upload: p.upload.load(Ordering::Relaxed),
+            name: p.name.lock().expect("name lock").clone(),
+            done: p.done.load(Ordering::Relaxed) as f64,
+            total: p.total.load(Ordering::Relaxed) as f64,
+        }
+    }
+
+    /// Stops the running transfer. Nothing is saved from a cancelled download.
+    #[napi]
+    pub fn cancel_transfer(&self) {
+        self.progress.cancel.store(true, Ordering::Relaxed);
+    }
+
     /// The `host:port` this session is connected to.
     #[napi(getter)]
     pub fn address(&self) -> String {

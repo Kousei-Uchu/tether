@@ -4,6 +4,7 @@ import SwiftUI
 struct RemoteView: View {
     @EnvironmentObject var model: AppModel
     @State private var keyboardOpen = false
+    @State private var showFiles = false
     @State private var sticky: Set<String> = []
 
     private let modifierKeys: [(label: String, code: String)] = [
@@ -48,6 +49,9 @@ struct RemoteView: View {
             mediaRow
         }
         .padding(.horizontal, 14)
+        .sheet(isPresented: $showFiles) {
+            FilesView().environmentObject(model)
+        }
         .padding(.bottom, 8)
         .background(KeyboardHost(isOpen: $keyboardOpen) { text in
             model.type(text, modifiers: activeModifiers())
@@ -83,6 +87,17 @@ struct RemoteView: View {
                 }
             }
             Spacer()
+            if model.mayFiles {
+                Button {
+                    Haptics.tap()
+                    showFiles = true
+                } label: {
+                    Image(systemName: "folder")
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Files")
+            }
             Button {
                 Haptics.tap()
                 keyboardOpen.toggle()

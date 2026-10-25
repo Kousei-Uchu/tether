@@ -45,6 +45,7 @@ fn host_config(d: &Device, offer: Option<PairingOffer>) -> HostConfig {
         input: None,
         wake: None,
         clipboard: None,
+        files: None,
     }
 }
 
@@ -457,6 +458,7 @@ fn with_media(host: &HostConfig) -> (Arc<HostConfig>, Arc<AtomicUsize>, Arc<Atom
         input: None,
         wake: None,
         clipboard: None,
+        files: None,
     };
     (Arc::new(cfg), started, stopped)
 }
@@ -628,6 +630,7 @@ fn with_input(host: &HostConfig, fake: Option<FakeInput>) -> Arc<HostConfig> {
         input: fake.map(|f| Arc::new(f) as Arc<dyn InputProvider>),
         wake: None,
         clipboard: None,
+        files: None,
     })
 }
 
@@ -873,6 +876,7 @@ async fn waking_needs_a_relay_and_the_power_permission() {
         input: None,
         wake: Some(fake.clone()),
         clipboard: None,
+        files: None,
     });
     let n = wake_answer(&relay, &client_dev, &["desk"]).await;
     assert!(n[0].contains("`power`"), "{n:?}");
@@ -911,6 +915,7 @@ async fn each_display_streams_separately_and_clicks_land_on_the_right_one() {
         input: Some(Arc::new(fake.clone())),
         wake: None,
         clipboard: None,
+        files: None,
     });
     let (host_session, mut client) = open_session(&host, &client_dev).await;
     let h = host.clone();
@@ -1033,6 +1038,7 @@ fn with_clipboard(host: &HostConfig, fake: Option<Arc<FakeClipboard>>) -> Arc<Ho
         input: None,
         wake: None,
         clipboard: fake.map(|f| f as Arc<dyn ClipboardProvider>),
+        files: None,
     })
 }
 

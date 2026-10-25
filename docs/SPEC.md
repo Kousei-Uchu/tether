@@ -144,7 +144,7 @@ input forwarding when the cursor leaves an edge.
 
 ### 5.2 Secure channel
 
-- Noise `XX_25519_ChaChaPoly_BLAKE2s`, prologue `tether/6` (tracks the protocol version). XX authenticates both static
+- Noise `XX_25519_ChaChaPoly_BLAKE2s`, prologue `tether/7` (tracks the protocol version). XX authenticates both static
   keys and hides them from passive observers.
 - Framing: `u16` big endian length, then one Noise transport frame. Plaintext of a frame is
   one flag byte (0 more, 1 last) plus up to 65518 bytes of message. Messages are chunked
@@ -191,6 +191,15 @@ bump `PROTOCOL_VERSION` for any incompatible change. A unit test pins the indice
 | 20 | `VerifyNonce` | host to client | Pairing only. The host's random value |
 | 21 | `VerifyReveal` | client to host | Pairing only. The value behind the commitment. The host checks it |
 | 22 | `VerifyDecision` | both | Pairing only. Whether the person confirmed the symbols match. A device is stored only if both said yes |
+| 23 | `FileList` | client to host | List a folder inside the shared folder. Needs `files` and a host started with a shared folder |
+| 24 | `FileEntries` | host to client | The listing, or an `error` saying why it is empty |
+| 25 | `FileGet` | client to host | Send me this file. Answered with `FileOk`, then `FileData`s and a `FileEnd`, or `FileFail` |
+| 26 | `FilePut` | client to host | I am about to send this many bytes to save under this name. Answered with `FileOk` or `FileFail`, then `FileDone` or `FileFail` after the `FileEnd` |
+| 27 | `FileOk` | host to client | The request with this id was accepted (`size` is the file's size for a `FileGet`) |
+| 28 | `FileData` | both | One piece of a file, at most 32 KiB, in order |
+| 29 | `FileEnd` | both | The last message of a file: SHA-256 of everything sent |
+| 30 | `FileDone` | host to client | The upload is saved, under this name (which differs if the asked-for name was taken) |
+| 31 | `FileFail` | both | Refuse, or stop, the transfer with this id, with a reason for the person |
 
 ### 5.5 Known limits
 
@@ -325,6 +334,7 @@ until M3c.
 
 ### M8a. Clipboard text (done, verified on Linux X11)
 
+- [x] Protocol version 7: file transfer. A host shares one folder; devices with `files` can list it, download from it and upload into it, in 32 KiB pieces with a SHA-256 check at the end. Paths are checked name by name and resolved on disk, so nothing outside the folder (links included) can be reached. Uploads go to a hidden partial file and never replace an existing file. Tested in `tests/files.rs`; the desktop and iPhone screens are not tested on a real screen
 - [x] Protocol version 6: pairing ends with a symbol comparison (commit, reveal, derive from the handshake hash and both values, 7 of 64 symbols = 42 bits, also as digits). Both people confirm before either device is stored. A host can also ask before each connection from a paired device. Verified with simulated people in `tests/verify.rs`; the dialogs are not verified on a real screen
 - [x] Protocol version 5: `ClipboardGet`, `ClipboardSet`, `ClipboardData`, with a 1 MiB limit enforced on both sides
 - [x] `ClipboardProvider` seam in core and `tether-clipboard` (arboard) behind it, one long-lived handle so X11 keeps serving the text
@@ -409,6 +419,7 @@ phone, with controls following permission changes live.
 | D-22 | Clipboard sharing is pull and push by hand, with its own host switch on top of `files` | A clipboard often holds passwords, so reading it needs two opt-ins, like remote control (D-16). Automatic sync would leak whatever is copied next, and needs echo-loop handling, so it waits | Accepted |
 | D-25 | Pairing verification commits before it reveals, and nothing is stored until both people confirm | Without the commitment, an attacker in the middle could keep generating handshake keys until both sessions produced the same short string. With it the attacker has one 1-in-2^42 guess per attempt, and a failed guess shows on both screens. The pairing code still authenticates; the symbols are a second, independent check | Accepted |
 | D-26 | Library entry points without a confirmer say yes to every question | `connect` and `accept` keep working for tests and tools. The CLI and the desktop app turn verification on, and the CLI skips it only with `--no-verify` | Accepted |
+| D-27 | File transfer shares one folder, one file each way at a time, and never replaces a file | Smallest thing that is safe to leave on: a device with `files` cannot reach beyond the folder, cannot overwrite what is there, and a failed or cancelled upload leaves nothing behind. Browsing the whole disk, resuming, and several files at once can come later | Accepted |
 | D-23 | macOS keys are sent as raw virtual key codes, never looked up by character | The layout lookup is main-thread only and aborts the process elsewhere. Physical positions are also what the protocol means | Accepted |
 | D-24 | Discovery is mDNS (`_tether._tcp`) with the public key in TXT, and nothing in it is trusted | A spoofed announcement can only make a connection fail, because the Noise handshake checks the real key. Desktops use the `mdns-sd` crate; iPhones use the system Bonjour API, since raw multicast needs an Apple entitlement. Quick connect is discovery plus the address the client already saved | Accepted |
 
@@ -424,6 +435,7 @@ phone, with controls following permission changes live.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-25 | File transfer: share a folder, browse, download, upload. Protocol version 7 |
 | 2026-10-25 | Connection approval and pairing verification with symbols. Protocol version 6 |
 | 2026-10-25 | Device discovery (mDNS advertise, scan, identify) and quick connect to paired devices whose address changed. No protocol change |
 | 2026-10-25 | Step 17: macOS crash hardening (raw key codes, panic guard, crash log) |

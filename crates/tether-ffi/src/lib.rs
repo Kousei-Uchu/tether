@@ -8,7 +8,10 @@ uniffi::setup_scaffolding!();
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
+    },
     time::Duration,
 };
 use tether_core::{
@@ -17,7 +20,7 @@ use tether_core::{
     paths::Paths,
     proto::{InputEvent, Key, MouseButton},
     prompt::{PromptKind, PromptQueue, QueueConfirmer},
-    session::{connect, connect_with, ClientMode, Confirmer, Outcome, Session},
+    session::{connect, connect_with, ClientMode, Confirmer, Outcome, Session, SessionError},
     trust::{TrustStore, TrustedPeer},
 };
 use tokio::{net::TcpStream, sync::Mutex};
@@ -44,6 +47,59 @@ pub struct PeerSummary {
     /// On a connection: what the host allows this device to do (`view`, `input`, `media`,
     /// `power`, `files`).
     pub permissions: Vec<String>,
+}
+
+/// One line of a folder listing on the computer.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct RemoteFile {
+    pub name: String,
+    /// Bytes; 0 for a folder.
+    pub size: u64,
+    pub dir: bool,
+}
+
+/// How far the running file transfer has got.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TransferProgress {
+    pub active: bool,
+    pub upload: bool,
+    pub name: String,
+    pub done: u64,
+    pub total: u64,
+}
+
+#[derive(Default)]
+struct Progress {
+    active: AtomicBool,
+    upload: AtomicBool,
+    cancel: AtomicBool,
+    done: AtomicU64,
+    total: AtomicU64,
+    name: StdMutex<String>,
+}
+
+/// Marks a transfer finished when dropped, however it ends.
+struct Running(Arc<Progress>);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.active.store(false, Ordering::Relaxed);
+    }
+}
+
+/// A refusal from the computer leaves the connection usable; anything else has ended it.
+fn settle<T>(
+    guard: &mut Option<Session<TcpStream>>,
+    result: Result<T, SessionError>,
+) -> Result<T, TetherError> {
+    match result {
+        Ok(v) => Ok(v),
+        Err(SessionError::Files(message)) => Err(fail(message)),
+        Err(e) => {
+            *guard = None;
+            Err(fail(e))
+        }
+    }
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -325,6 +381,8 @@ pub struct Connection {
     session: Mutex<Option<Session<TcpStream>>>,
     peer: PeerSummary,
     permissions: StdMutex<Vec<String>>,
+    progress: Arc<Progress>,
+    next_id: AtomicU64,
 }
 
 impl Connection {
@@ -345,7 +403,22 @@ impl Connection {
             session: Mutex::new(Some(session)),
             peer,
             permissions: StdMutex::new(permissions),
+            progress: Arc::new(Progress::default()),
+            next_id: AtomicU64::new(1),
         })
+    }
+}
+
+impl Connection {
+    fn start_transfer(&self, name: &str, upload: bool) -> Running {
+        let p = &self.progress;
+        p.cancel.store(false, Ordering::Relaxed);
+        p.done.store(0, Ordering::Relaxed);
+        p.total.store(0, Ordering::Relaxed);
+        p.upload.store(upload, Ordering::Relaxed);
+        *p.name.lock().expect("lock") = name.to_owned();
+        p.active.store(true, Ordering::Relaxed);
+        Running(p.clone())
     }
 }
 
@@ -381,6 +454,81 @@ impl Connection {
                 Err(fail(e))
             }
         }
+    }
+
+    /// Lists a folder in the computer's shared folder (empty for the folder itself). Needs
+    /// the `files` permission and a computer sharing a folder; if it refuses, the error says
+    /// why and the connection stays open.
+    pub async fn list_files(&self, path: String) -> Result<Vec<RemoteFile>, TetherError> {
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| fail("connection is closed"))?;
+        let result = session.list_files(&path).await;
+        let entries = settle(&mut guard, result)?;
+        Ok(entries
+            .into_iter()
+            .map(|e| RemoteFile {
+                name: e.name,
+                size: e.size,
+                dir: e.dir,
+            })
+            .collect())
+    }
+
+    /// Downloads `remote` to the local file `dest_path`, replacing what is there once the
+    /// whole file has arrived intact. Returns the size. Poll `transfer_progress`.
+    pub async fn download_file(
+        &self,
+        remote: String,
+        dest_path: String,
+    ) -> Result<u64, TetherError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) as u32;
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| fail("connection is closed"))?;
+        let _run = self.start_transfer(&remote, false);
+        let p = self.progress.clone();
+        let result = session
+            .download_file(id, &remote, std::path::Path::new(&dest_path), &mut |d, t| {
+                p.done.store(d, Ordering::Relaxed);
+                p.total.store(t, Ordering::Relaxed);
+                !p.cancel.load(Ordering::Relaxed)
+            })
+            .await;
+        settle(&mut guard, result)
+    }
+
+    /// Uploads the local file `src_path` into the computer's shared folder as `remote`.
+    /// The computer never replaces a file, so it may pick another name; returns the name
+    /// it used.
+    pub async fn upload_file(&self, src_path: String, remote: String) -> Result<String, TetherError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) as u32;
+        let mut guard = self.session.lock().await;
+        let session = guard.as_mut().ok_or_else(|| fail("connection is closed"))?;
+        let _run = self.start_transfer(&remote, true);
+        let p = self.progress.clone();
+        let result = session
+            .upload_file(id, std::path::Path::new(&src_path), &remote, &mut |d, t| {
+                p.done.store(d, Ordering::Relaxed);
+                p.total.store(t, Ordering::Relaxed);
+                !p.cancel.load(Ordering::Relaxed)
+            })
+            .await;
+        settle(&mut guard, result)
+    }
+
+    /// Does not wait for the connection, so it can be polled while a transfer runs.
+    pub fn transfer_progress(&self) -> TransferProgress {
+        let p = &self.progress;
+        TransferProgress {
+            active: p.active.load(Ordering::Relaxed),
+            upload: p.upload.load(Ordering::Relaxed),
+            name: p.name.lock().expect("lock").clone(),
+            done: p.done.load(Ordering::Relaxed),
+            total: p.total.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn cancel_transfer(&self) {
+        self.progress.cancel.store(true, Ordering::Relaxed);
     }
 
     /// Sends one mouse or keyboard action. If the host refuses it, the reason shows up in

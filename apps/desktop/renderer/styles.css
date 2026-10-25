@@ -248,6 +248,13 @@ details.advanced > :last-child { margin-bottom: 18px; }
 .sas-item { text-align: center; min-width: 58px; }
 .sas-symbol { font-size: 34px; line-height: 1.2; }
 .sas-name { font-size: 11px; color: var(--muted); }
+.files-list { display: grid; gap: 4px; margin: 8px 0; max-height: 260px; overflow-y: auto; }
+.file-row { display: flex; align-items: center; gap: 10px; padding: 4px 6px; border-radius: 8px; }
+.file-row:hover { background: var(--accent-soft); }
+.file-name { flex: 1; text-align: left; background: none; border: none; padding: 2px 0; color: var(--text); cursor: pointer; }
+.file-name:disabled { cursor: default; }
+.bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin: 8px 0 4px; }
+.bar-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.2s; }
 #nearby { display: grid; gap: 10px; }
 #nearby:not(:empty) { margin-bottom: 10px; }
 .computer {

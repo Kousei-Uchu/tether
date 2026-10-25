@@ -19,6 +19,21 @@ export interface NearbyDevice {
   compatible: boolean;
 }
 
+export interface FileEntry {
+  name: string;
+  /** Bytes; 0 for a folder. */
+  size: number;
+  dir: boolean;
+}
+
+export interface TransferStatus {
+  active: boolean;
+  upload: boolean;
+  name: string;
+  done: number;
+  total: number;
+}
+
 export interface EmojiSymbol {
   symbol: string;
   name: string;
@@ -117,12 +132,23 @@ export class Device {
     confirm?: boolean | null,
     /** Ask the person to compare symbols when someone pairs (see pendingPrompts). Off by default. */
     verify?: boolean | null,
+    /** A folder to share with devices that hold `files`: they can browse it, download from it and upload into it. */
+    share?: string | null,
   ): Promise<HostHandle>;
 }
 
 export class Connection {
   /** The `host:port` this session is connected to. */
   readonly address: string;
+  /** Lists a folder in the host's shared folder ('' is the folder itself). Rejects with the host's reason; the connection stays open. */
+  listFiles(path: string): Promise<FileEntry[]>;
+  /** Downloads to a local path, replacing what is there once the whole file has arrived intact. Resolves with the size in bytes. */
+  downloadFile(remote: string, dest: string): Promise<number>;
+  /** Uploads a local file. The host never replaces a file, so it may pick another name; resolves with the name it used. */
+  uploadFile(src: string, remote: string): Promise<string>;
+  /** Progress of the running transfer. Does not wait for the connection. */
+  transferStatus(): TransferStatus;
+  cancelTransfer(): void;
   readonly peer: PeerSummary;
   /** What the host currently allows this device to do. Refreshed by ping(). */
   readonly permissions: string[];

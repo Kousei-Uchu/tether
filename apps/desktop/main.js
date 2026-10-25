@@ -1,5 +1,5 @@
 // Electron main process. Owns the Rust bridge; the renderer never touches it directly.
-const { app, BrowserWindow, ipcMain, clipboard, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeTheme } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const QRCode = require('qrcode');
@@ -257,6 +257,40 @@ function registerIpc() {
     return { copied: true, message: 'Copied the other computer\'s clipboard to this one.' };
   });
 
+  // Files. Paths on this computer are chosen in native dialogs that main opens, so the page
+  // never names a local path itself.
+  handle('files:list', (remote) => {
+    if (!connection) throw new Error('Not connected.');
+    return connection.listFiles(String(remote ?? ''));
+  });
+  handle('files:download', async (remote) => {
+    if (!connection) throw new Error('Not connected.');
+    remote = String(remote);
+    const name = remote.split(/[\\/]/).filter(Boolean).pop() || 'download';
+    const choice = await dialog.showSaveDialog(win ?? undefined, {
+      defaultPath: require('node:path').join(app.getPath('downloads'), name),
+    });
+    if (choice.canceled || !choice.filePath) return { cancelled: true };
+    const size = await connection.downloadFile(remote, choice.filePath);
+    return { cancelled: false, saved: choice.filePath, size };
+  });
+  handle('files:upload', async (remoteDir) => {
+    if (!connection) throw new Error('Not connected.');
+    const choice = await dialog.showOpenDialog(win ?? undefined, { properties: ['openFile'] });
+    if (choice.canceled || choice.filePaths.length === 0) return { cancelled: true };
+    const local = choice.filePaths[0];
+    const base = require('node:path').basename(local);
+    const dir = String(remoteDir ?? '').replace(/[\\/]+$/, '');
+    const name = await connection.uploadFile(local, dir ? `${dir}/${base}` : base);
+    return { cancelled: false, name };
+  });
+  handle('files:status', () => (connection ? connection.transferStatus() : { active: false, upload: false, name: '', done: 0, total: 0 }));
+  handle('files:cancel', () => connection?.cancelTransfer());
+  handle('dialog:folder', async () => {
+    const choice = await dialog.showOpenDialog(win ?? undefined, { properties: ['openDirectory', 'createDirectory'] });
+    return choice.canceled ? null : choice.filePaths[0];
+  });
+
   handle('wake:send', async (target) => {
     if (!connection) throw new Error('Not connected.');
     const name = String(target ?? '').trim();
@@ -264,7 +298,7 @@ function registerIpc() {
     return connection.wake(name);
   });
 
-  handle('host:start', async ({ bind, pairing, grant, video, audio, input, clipboard: shareClipboard, wake, confirm }) => {
+  handle('host:start', async ({ bind, pairing, grant, video, audio, input, clipboard: shareClipboard, wake, confirm, share }) => {
     if (host) throw new Error('Already accepting connections.');
     const options = pairing ? { grant: validPermissions(grant ?? ['view']) } : null;
     host = await device.listen(
@@ -283,6 +317,7 @@ function registerIpc() {
       true,
       Boolean(confirm),
       verifyPairing,
+      typeof share === 'string' && share.trim() ? share.trim() : null,
     );
     hostLog = [];
     hostLinks = await buildLinks();

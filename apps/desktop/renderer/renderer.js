@@ -394,6 +394,99 @@ $('clip-get').addEventListener('click', (e) =>
   clipboardAction(e.currentTarget, async () => (await window.tether.getClipboard()).message),
 );
 
+// ----- files -----
+let filesLoaded = false;
+let filesPath = '';
+
+function sizeText(bytes) {
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let v = bytes;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return i === 0 ? `${v} B` : `${v.toFixed(1)} ${units[i]}`;
+}
+
+function joinPath(dir, name) {
+  return dir ? `${dir}/${name}` : name;
+}
+
+async function loadFiles(path) {
+  try {
+    say('files-msg', '');
+    const entries = await window.tether.listFiles(path);
+    filesPath = path;
+    $('files-path').textContent = `/${path}`;
+    $('files-up').disabled = path === '';
+    $('files-list').replaceChildren(
+      ...entries.map((e) => {
+        const name = el('button', { className: 'file-name', textContent: e.dir ? `\u{1F4C1} ${e.name}` : e.name, disabled: !e.dir });
+        if (e.dir) name.addEventListener('click', () => loadFiles(joinPath(filesPath, e.name)));
+        const row = el('div', { className: 'file-row' }, name, el('span', { className: 'muted small', textContent: e.dir ? '' : sizeText(e.size) }));
+        if (!e.dir) {
+          const get = el('button', { textContent: 'Download' });
+          get.addEventListener('click', () => transfer(() => downloadOne(joinPath(filesPath, e.name))));
+          row.append(get);
+        }
+        return row;
+      }),
+    );
+    if (entries.length === 0) say('files-msg', 'This folder is empty.');
+  } catch (e) {
+    $('files-list').replaceChildren();
+    say('files-msg', e.message, true);
+  }
+}
+
+async function downloadOne(remote) {
+  const r = await window.tether.downloadFile(remote);
+  return r.cancelled ? '' : `Saved to ${r.saved} (${sizeText(r.size)}).`;
+}
+
+async function uploadOne() {
+  const r = await window.tether.uploadFile(filesPath);
+  if (r.cancelled) return '';
+  await loadFiles(filesPath);
+  return `Sent. Saved there as ${r.name}.`;
+}
+
+async function transfer(run) {
+  $('files-progress').hidden = false;
+  say('files-msg', '');
+  const timer = setInterval(async () => {
+    try {
+      const s = await window.tether.filesStatus();
+      if (!s.active) return;
+      const pct = s.total ? Math.min(100, (s.done / s.total) * 100) : 0;
+      $('files-bar').style.width = `${pct}%`;
+      $('files-progress-text').textContent = `${s.upload ? 'Sending' : 'Receiving'} ${s.name}: ${sizeText(s.done)} of ${sizeText(s.total)}`;
+    } catch {
+      // the next tick will try again
+    }
+  }, 300);
+  try {
+    const message = await run();
+    if (message) say('files-msg', message);
+  } catch (e) {
+    say('files-msg', e.message, true);
+  } finally {
+    clearInterval(timer);
+    $('files-progress').hidden = true;
+    $('files-bar').style.width = '0%';
+  }
+}
+
+$('files-up').addEventListener('click', () => loadFiles(filesPath.split('/').slice(0, -1).join('/')));
+$('files-refresh').addEventListener('click', () => loadFiles(filesPath));
+$('files-upload').addEventListener('click', () => transfer(uploadOne));
+$('files-cancel').addEventListener('click', () => window.tether.cancelFiles());
+$('share-browse').addEventListener('click', async () => {
+  const dir = await window.tether.chooseFolder();
+  if (dir) $('share-folder').value = dir;
+});
+
 // ----- connecting -----
 let pollTimer = null;
 
@@ -406,6 +499,13 @@ function showConnection(state) {
   const mayMedia = state.connected && state.permissions.includes('media');
   const mayFiles = state.connected && state.permissions.includes('files');
   $('clipboard-box').hidden = !mayFiles;
+  $('files-box').hidden = !mayFiles;
+  if (mayFiles && !filesLoaded) {
+    filesLoaded = true;
+    loadFiles('');
+  } else if (!state.connected) {
+    filesLoaded = false;
+  }
   $('wake-row').hidden = !(state.connected && state.permissions.includes('power'));
   $('media-row').hidden = !mayMedia;
   $('media-msg').hidden = !mayMedia;
@@ -591,6 +691,7 @@ function hostSettings() {
     input: $('allow-input').checked,
     clipboard: $('allow-clipboard').checked,
     confirm: $('confirm-connections').checked,
+    share: $('share-folder').value.trim(),
     wake: $('wake-targets').value,
     grant: chosenGrant(),
   };
@@ -609,6 +710,7 @@ function restoreHostSettings() {
     if (typeof saved[key] === 'boolean') $(id).checked = saved[key];
   }
   if (typeof saved.wake === 'string') $('wake-targets').value = saved.wake;
+  if (typeof saved.share === 'string') $('share-folder').value = saved.share;
   if ([...$('video-source').options].some((o) => o.value === saved.source)) $('video-source').value = saved.source;
   if (Array.isArray(saved.grant)) {
     for (const box of $('grant-boxes').querySelectorAll('input')) box.checked = saved.grant.includes(box.value);
@@ -634,6 +736,7 @@ $('host-start').addEventListener('click', () =>
       wake: $('wake-targets').value.split('\n'),
       clipboard: $('allow-clipboard').checked,
       confirm: $('confirm-connections').checked,
+      share: $('share-folder').value.trim(),
       grant: chosenGrant(),
     });
     showHost(state);

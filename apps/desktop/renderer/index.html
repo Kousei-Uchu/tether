@@ -202,6 +202,26 @@
               <p class="hint small">Text only, up to 1 MiB. Clipboard sharing has to be on at the other end.</p>
             </div>
 
+            <div id="files-box" class="tool" hidden>
+              <h3>Files</h3>
+              <div class="row tight">
+                <button id="files-up" aria-label="Up one folder" title="Up one folder">&#8593;</button>
+                <span id="files-path" class="muted small grow"></span>
+                <button id="files-refresh">Refresh</button>
+                <button id="files-upload">Upload...</button>
+              </div>
+              <div id="files-list" class="files-list"></div>
+              <div id="files-progress" hidden>
+                <div class="bar"><div id="files-bar" class="bar-fill"></div></div>
+                <div class="row tight">
+                  <span id="files-progress-text" class="muted small grow"></span>
+                  <button id="files-cancel">Cancel</button>
+                </div>
+              </div>
+              <p id="files-msg" class="msg" role="status"></p>
+              <p class="hint small">The other computer has to share a folder. Files are checked when they arrive, and a file is never replaced by one with the same name.</p>
+            </div>
+
             <div id="wake-tool" class="tool" hidden>
               <h3>Wake a computer</h3>
               <div id="wake-row" class="row tight" hidden>
@@ -254,6 +274,13 @@
                 <span class="setting-text"><strong>Clipboard sharing</strong><span class="muted small">Devices allowed to use clipboard and files can read and replace the text on this computer's clipboard.</span></span>
                 <input id="allow-clipboard" type="checkbox" class="switch" />
               </label>
+              <div class="setting">
+                <span class="setting-text"><strong>Shared folder</strong><span class="muted small">Devices allowed to use clipboard and files can browse this folder, download from it and upload into it. Leave empty to share no files.</span></span>
+                <span class="row tight">
+                  <input id="share-folder" type="text" spellcheck="false" placeholder="No folder" />
+                  <button id="share-browse" type="button">Choose...</button>
+                </span>
+              </div>
               <label class="setting">
                 <span class="setting-text"><strong>Ask before each connection</strong><span class="muted small">A paired device has to wait until you press Allow.</span></span>
                 <input id="confirm-connections" type="checkbox" class="switch" />

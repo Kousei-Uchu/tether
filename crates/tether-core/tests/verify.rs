@@ -43,6 +43,7 @@ fn host_config(d: &Dev, offer: Option<PairingOffer>) -> HostConfig {
         input: None,
         wake: None,
         clipboard: None,
+        files: None,
     }
 }
 

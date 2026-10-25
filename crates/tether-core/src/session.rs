@@ -7,6 +7,7 @@
 use crate::{
     channel::{ChannelError, Role, SecureChannel, SecureSender},
     clipboard::ClipboardProvider,
+    files::{FileShare, Upload},
     identity::{fingerprint, Identity},
     input::{InputProvider, InputSink},
     media::MediaProvider,
@@ -16,15 +17,19 @@ use crate::{
     trust::{TrustStore, TrustedPeer},
     wake::WakeProvider,
 };
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
     future::Future,
+    io::{Read, Write},
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tether_proto::{
-    DisplayDesc, Hello, InputEvent, Intent, Message, Permission, Platform, SignalKind,
+    DisplayDesc, FileEntry, Hello, FILE_CHUNK_BYTES, InputEvent, Intent, Message, Permission, Platform, SignalKind,
     MAX_CLIPBOARD_BYTES, PROTOCOL_VERSION,
 };
 use tokio::{
@@ -75,6 +80,9 @@ pub enum SessionError {
     PairingFailed(String),
     #[error("the connection was declined")]
     Declined,
+    /// A file request the host refused or could not do. The session is still fine.
+    #[error("{0}")]
+    Files(String),
     #[error("verification failed: {0}")]
     VerificationFailed(String),
     #[error("invalid pairing code; expected 16 letters and digits like XXXX-XXXX-XXXX-XXXX")]
@@ -251,6 +259,9 @@ pub struct HostConfig {
     /// Whether this host lets devices read and replace its clipboard. `None` means no, even
     /// for a device that holds the `files` permission.
     pub clipboard: Option<Arc<dyn ClipboardProvider>>,
+    /// The folder this host lets devices with the `files` permission browse, download from
+    /// and upload into. `None` means no file transfer.
+    pub files: Option<Arc<FileShare>>,
 }
 
 impl HostConfig {
@@ -715,6 +726,190 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         }
     }
 
+    /// Client side: the contents of a folder in the host's shared folder (empty path for the
+    /// folder itself). Needs `files`. A refusal comes back as [`SessionError::Files`] and
+    /// leaves the session usable.
+    pub async fn list_files(&mut self, path: &str) -> Result<Vec<FileEntry>, SessionError> {
+        self.channel
+            .send(&Message::FileList { path: path.to_owned() })
+            .await?;
+        loop {
+            match self.recv_file_message().await? {
+                Message::FileEntries { entries, error: None, .. } => return Ok(entries),
+                Message::FileEntries { error: Some(e), .. } => return Err(SessionError::Files(e)),
+                _ => continue,
+            }
+        }
+    }
+
+    /// Client side: downloads `remote` from the host's shared folder to `dest`, replacing
+    /// whatever is there once the whole file has arrived and matches its checksum. Needs
+    /// `files`. `progress(done, total)` is called after every piece; return false to cancel.
+    /// Returns the size.
+    pub async fn download_file(
+        &mut self,
+        id: u32,
+        remote: &str,
+        dest: &Path,
+        progress: &mut dyn FnMut(u64, u64) -> bool,
+    ) -> Result<u64, SessionError> {
+        let part = part_path(dest);
+        let result = self.download_inner(id, remote, dest, &part, progress).await;
+        if result.is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+        result
+    }
+
+    async fn download_inner(
+        &mut self,
+        id: u32,
+        remote: &str,
+        dest: &Path,
+        part: &Path,
+        progress: &mut dyn FnMut(u64, u64) -> bool,
+    ) -> Result<u64, SessionError> {
+        self.channel
+            .send(&Message::FileGet { id, path: remote.to_owned() })
+            .await?;
+        let total = loop {
+            match self.recv_file_message().await? {
+                Message::FileOk { id: i, size } if i == id => break size,
+                Message::FileFail { id: i, reason } if i == id => {
+                    return Err(SessionError::Files(reason))
+                }
+                _ => continue,
+            }
+        };
+        let mut file = File::create(part).map_err(local_err)?;
+        let mut hasher = Sha256::new();
+        let mut done = 0u64;
+        let mut last_ping = Instant::now();
+        loop {
+            // The host hears nothing from us while it sends, and would drop an idle client.
+            if last_ping.elapsed() > Duration::from_secs(10) {
+                self.channel.send(&Message::Ping { nonce: u64::MAX }).await?;
+                last_ping = Instant::now();
+            }
+            match self.recv_file_message().await? {
+                Message::FileData { id: i, data } if i == id => {
+                    done += data.len() as u64;
+                    if data.len() > FILE_CHUNK_BYTES || done > total {
+                        return Err(SessionError::Files(
+                            "the host sent more than it announced".into(),
+                        ));
+                    }
+                    hasher.update(&data);
+                    file.write_all(&data).map_err(local_err)?;
+                    if !progress(done, total) {
+                        let _ = self
+                            .channel
+                            .send(&Message::FileFail { id, reason: "cancelled".into() })
+                            .await;
+                        return Err(SessionError::Files("cancelled".into()));
+                    }
+                }
+                Message::FileEnd { id: i, sha256 } if i == id => {
+                    let digest: [u8; 32] = hasher.finalize().into();
+                    if done != total || digest != sha256 {
+                        return Err(SessionError::Files(
+                            "the file was damaged on the way, so it was not saved".into(),
+                        ));
+                    }
+                    file.sync_all().map_err(local_err)?;
+                    drop(file);
+                    // Renaming over an existing file fails on Windows, so clear the way.
+                    if dest.exists() {
+                        std::fs::remove_file(dest).map_err(local_err)?;
+                    }
+                    std::fs::rename(part, dest).map_err(local_err)?;
+                    return Ok(done);
+                }
+                Message::FileFail { id: i, reason } if i == id => {
+                    return Err(SessionError::Files(reason))
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    /// Client side: uploads the local file `src` into the host's shared folder as `remote`
+    /// (a name, or a path into a folder that exists there). The host never replaces a file,
+    /// so it may pick another name; the name it used is returned. Needs `files`.
+    pub async fn upload_file(
+        &mut self,
+        id: u32,
+        src: &Path,
+        remote: &str,
+        progress: &mut dyn FnMut(u64, u64) -> bool,
+    ) -> Result<String, SessionError> {
+        let mut file = File::open(src).map_err(local_err)?;
+        let total = file.metadata().map_err(local_err)?.len();
+        self.channel
+            .send(&Message::FilePut { id, name: remote.to_owned(), size: total })
+            .await?;
+        loop {
+            match self.recv_file_message().await? {
+                Message::FileOk { id: i, .. } if i == id => break,
+                Message::FileFail { id: i, reason } if i == id => {
+                    return Err(SessionError::Files(reason))
+                }
+                _ => continue,
+            }
+        }
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; FILE_CHUNK_BYTES];
+        let mut done = 0u64;
+        while done < total {
+            let n = file.read(&mut buf).map_err(local_err)?;
+            if n == 0 {
+                self.channel
+                    .send(&Message::FileFail { id, reason: "the file changed while sending".into() })
+                    .await?;
+                return Err(SessionError::Files("the file changed while sending".into()));
+            }
+            hasher.update(&buf[..n]);
+            self.channel
+                .send(&Message::FileData { id, data: buf[..n].to_vec() })
+                .await?;
+            done += n as u64;
+            if !progress(done, total) {
+                self.channel
+                    .send(&Message::FileFail { id, reason: "cancelled".into() })
+                    .await?;
+                return Err(SessionError::Files("cancelled".into()));
+            }
+        }
+        self.channel
+            .send(&Message::FileEnd { id, sha256: hasher.finalize().into() })
+            .await?;
+        loop {
+            match self.recv_file_message().await? {
+                Message::FileDone { id: i, name } if i == id => return Ok(name),
+                Message::FileFail { id: i, reason } if i == id => {
+                    return Err(SessionError::Files(reason))
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    /// The next message, with the housekeeping every reply loop shares.
+    async fn recv_file_message(&mut self) -> Result<Message, SessionError> {
+        loop {
+            match timeout(SIGNAL_TIMEOUT, self.channel.recv())
+                .await
+                .map_err(|_| SessionError::Timeout)??
+            {
+                Message::Permissions { granted } => self.permissions = granted.into(),
+                Message::Notice { text } => self.push_notice(text),
+                Message::Bye { reason } => return Err(SessionError::Rejected(reason)),
+                Message::Pong { .. } => continue,
+                other => return Ok(other),
+            }
+        }
+    }
+
     /// Reads whatever the host sent before hanging up, looking for its reason.
     async fn read_goodbye(&mut self) -> Option<String> {
         loop {
@@ -874,6 +1069,25 @@ where
     }
 }
 
+fn part_path(dest: &Path) -> PathBuf {
+    let mut name = dest.file_name().unwrap_or_default().to_os_string();
+    name.push(".tether-part");
+    dest.with_file_name(name)
+}
+
+fn local_err(e: std::io::Error) -> SessionError {
+    SessionError::Files(format!("a problem with the file on this device: {e}"))
+}
+
+/// A file the host is sending.
+struct Download {
+    id: u32,
+    file: File,
+    size: u64,
+    sent: u64,
+    hasher: Sha256,
+}
+
 /// Everything the host holds open for one connected device.
 struct HostState {
     media: Option<Box<dyn Send>>,
@@ -887,6 +1101,9 @@ struct HostState {
     window_count: u32,
     input_retry_at: Option<Instant>,
     last_wake: Option<Instant>,
+    /// At most one file each way at a time.
+    download: Option<Download>,
+    upload: Option<Upload>,
 }
 
 impl HostState {
@@ -901,6 +1118,8 @@ impl HostState {
             window_count: 0,
             input_retry_at: None,
             last_wake: None,
+            download: None,
+            upload: None,
         }
     }
 
@@ -912,6 +1131,11 @@ impl HostState {
         }
         if !p.contains(Permission::Input) && !p.contains(Permission::Media) {
             self.input = None;
+        }
+        if !p.contains(Permission::Files) {
+            // Dropping an upload deletes its partial file.
+            self.download = None;
+            self.upload = None;
         }
     }
 
@@ -964,6 +1188,10 @@ async fn serve_loop<W: AsyncWrite + Unpin>(
                 if last_heard.elapsed() > IDLE_TIMEOUT {
                     return Err(SessionError::Timeout);
                 }
+            }
+            // While a file is going out, send the next piece whenever nothing else is waiting.
+            _ = std::future::ready(()), if state.download.is_some() => {
+                send_file_piece(sender, state).await?;
             }
             incoming = rx.recv() => {
                 let msg = match incoming {
@@ -1018,6 +1246,73 @@ async fn serve_loop<W: AsyncWrite + Unpin>(
                         let text = handle_wake(host, *permissions, state, &target);
                         sender.send(&Message::Notice { text }).await?;
                     }
+                    Message::FileList { path } => {
+                        let (entries, error) = match files_for(host, *permissions).and_then(|s| s.list(&path)) {
+                            Ok(entries) => (entries, None),
+                            Err(reason) => (Vec::new(), Some(reason)),
+                        };
+                        sender.send(&Message::FileEntries { path, entries, error }).await?;
+                    }
+                    Message::FileGet { id, path } => {
+                        let reply = match files_for(host, *permissions).and_then(|s| s.open_read(&path)) {
+                            Ok(_) if state.download.is_some() => Message::FileFail {
+                                id,
+                                reason: "another download is already running".into(),
+                            },
+                            Ok((file, size)) => {
+                                state.download = Some(Download { id, file, size, sent: 0, hasher: Sha256::new() });
+                                Message::FileOk { id, size }
+                            }
+                            Err(reason) => Message::FileFail { id, reason },
+                        };
+                        sender.send(&reply).await?;
+                    }
+                    Message::FilePut { id, name, size } => {
+                        let reply = if state.upload.is_some() {
+                            Message::FileFail { id, reason: "another upload is already running".into() }
+                        } else {
+                            match files_for(host, *permissions).and_then(|s| s.begin_upload(id, &name, size)) {
+                                Ok(up) => {
+                                    state.upload = Some(up);
+                                    Message::FileOk { id, size: 0 }
+                                }
+                                Err(reason) => Message::FileFail { id, reason },
+                            }
+                        };
+                        sender.send(&reply).await?;
+                    }
+                    Message::FileData { id, data } => {
+                        if state.upload.as_ref().is_some_and(|u| u.id == id) {
+                            let outcome = if data.len() > FILE_CHUNK_BYTES {
+                                Err("the device sent a piece that was too large".to_owned())
+                            } else {
+                                state.upload.as_mut().expect("checked").write(&data)
+                            };
+                            if let Err(reason) = outcome {
+                                state.upload = None;
+                                sender.send(&Message::FileFail { id, reason }).await?;
+                            }
+                        }
+                    }
+                    Message::FileEnd { id, sha256 } => {
+                        if state.upload.as_ref().is_some_and(|u| u.id == id) {
+                            let up = state.upload.take().expect("checked");
+                            let reply = match up.finish(&sha256) {
+                                Ok(name) => Message::FileDone { id, name },
+                                Err(reason) => Message::FileFail { id, reason },
+                            };
+                            sender.send(&reply).await?;
+                        }
+                    }
+                    Message::FileFail { id, .. } => {
+                        // The device cancelled. Nothing to answer.
+                        if state.download.as_ref().is_some_and(|d| d.id == id) {
+                            state.download = None;
+                        }
+                        if state.upload.as_ref().is_some_and(|u| u.id == id) {
+                            state.upload = None;
+                        }
+                    }
                     Message::ClipboardGet => {
                         let (notice, text) = handle_clipboard_get(host, *permissions).await;
                         if let Some(text) = notice {
@@ -1071,6 +1366,54 @@ fn handle_wake(
     }
     state.last_wake = Some(Instant::now());
     provider.wake(target).unwrap_or_else(|reason| reason)
+}
+
+/// The shared folder, if this device may use it. The error is what to tell the person.
+fn files_for(host: &HostConfig, permissions: PermissionSet) -> Result<&FileShare, String> {
+    permissions
+        .require(Permission::Files)
+        .map_err(|_| "This device is not allowed to use `files` on the host.".to_owned())?;
+    host.files
+        .as_deref()
+        .ok_or_else(|| "File sharing is turned off on the host.".to_owned())
+}
+
+/// Sends the next piece of the file being downloaded, or its end.
+async fn send_file_piece<W: AsyncWrite + Unpin>(
+    sender: &mut SecureSender<W>,
+    state: &mut HostState,
+) -> Result<(), SessionError> {
+    let Some(dl) = state.download.as_mut() else {
+        return Ok(());
+    };
+    let mut buf = vec![0u8; FILE_CHUNK_BYTES];
+    let id = dl.id;
+    let outcome = match dl.file.read(&mut buf) {
+        Ok(0) if dl.sent == dl.size => Ok(None),
+        Ok(0) => Err("the file changed while it was being sent".to_owned()),
+        Ok(n) if dl.sent + n as u64 > dl.size => Err("the file changed while it was being sent".to_owned()),
+        Ok(n) => {
+            buf.truncate(n);
+            dl.sent += n as u64;
+            dl.hasher.update(&buf);
+            Ok(Some(buf))
+        }
+        Err(e) => Err(format!("could not read the file: {e}")),
+    };
+    match outcome {
+        Ok(Some(data)) => sender.send(&Message::FileData { id, data }).await?,
+        Ok(None) => {
+            let dl = state.download.take().expect("checked");
+            sender
+                .send(&Message::FileEnd { id, sha256: dl.hasher.finalize().into() })
+                .await?;
+        }
+        Err(reason) => {
+            state.download = None;
+            sender.send(&Message::FileFail { id, reason }).await?;
+        }
+    }
+    Ok(())
 }
 
 /// The clipboard provider, if this device may use it. The error is what to tell the person.
