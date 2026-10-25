@@ -28,6 +28,9 @@ final class AppModel: ObservableObject {
     @Published var rttMs: Double?
     @Published var notice: String?
     @Published var startupError: String?
+    /// Set while pairing asks the person to compare symbols with the computer.
+    @Published var verifyPrompt: VerifyPrompt?
+    private var promptTask: Task<Void, Never>?
 
     private var device: Device?
     private let discovery = HostDiscovery()
@@ -112,8 +115,22 @@ final class AppModel: ObservableObject {
     func pair(address: String, code: String) async {
         guard let device else { return }
         phase = .working("Pairing...")
+        // Pairing waits for both people to compare symbols, so watch for the question.
+        promptTask = Task { [weak self] in
+            while !Task.isCancelled {
+                if let prompt = self?.device?.pendingPrompt(), self?.verifyPrompt?.id != prompt.id {
+                    self?.verifyPrompt = prompt
+                }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+        defer {
+            promptTask?.cancel()
+            promptTask = nil
+            verifyPrompt = nil
+        }
         do {
-            let peer = try await device.pair(address: address.trimmingCharacters(in: .whitespaces), code: code)
+            let peer = try await device.pairVerified(address: address.trimmingCharacters(in: .whitespaces), code: code)
             let host = SavedHost(fingerprint: peer.fingerprint, name: peer.name, address: address.trimmingCharacters(in: .whitespaces))
             hosts.removeAll { $0.fingerprint == host.fingerprint }
             hosts.append(host)
@@ -122,6 +139,14 @@ final class AppModel: ObservableObject {
         } catch {
             phase = .failed(AppModel.readable(error))
         }
+    }
+
+    /// The person's answer to the symbol comparison.
+    func answerVerify(_ matches: Bool) {
+        if let prompt = verifyPrompt {
+            _ = device?.answerPrompt(id: prompt.id, accept: matches)
+        }
+        verifyPrompt = nil
     }
 
     func forget(_ host: SavedHost) {

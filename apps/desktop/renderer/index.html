@@ -63,6 +63,17 @@
         </div>
       </aside>
 
+      <dialog id="prompt-dialog" aria-labelledby="prompt-title">
+        <h2 id="prompt-title"></h2>
+        <p id="prompt-text" class="hint"></p>
+        <div id="prompt-emoji" class="sas" hidden></div>
+        <p id="prompt-digits" class="muted small" hidden></p>
+        <div class="row actions">
+          <button id="prompt-no" class="danger-outline"></button>
+          <button id="prompt-yes" class="primary"></button>
+        </div>
+      </dialog>
+
       <main class="content">
         <!-- ============================== Computers ============================== -->
         <section id="view-computers" class="view active" aria-labelledby="computers-title">
@@ -242,6 +253,10 @@
               <label class="setting">
                 <span class="setting-text"><strong>Clipboard sharing</strong><span class="muted small">Devices allowed to use clipboard and files can read and replace the text on this computer's clipboard.</span></span>
                 <input id="allow-clipboard" type="checkbox" class="switch" />
+              </label>
+              <label class="setting">
+                <span class="setting-text"><strong>Ask before each connection</strong><span class="muted small">A paired device has to wait until you press Allow.</span></span>
+                <input id="confirm-connections" type="checkbox" class="switch" />
               </label>
               <fieldset id="grant-set" class="grant">
                 <legend>A device that pairs with the code may</legend>

@@ -11,7 +11,11 @@ use tether_core::{
     pairing::PairingOffer,
     paths::{default_device_name, Paths},
     permissions::PermissionSet,
-    session::{accept, connect, ClientMode, HostConfig, Outcome},
+    session::{
+        accept_with, connect, connect_with, BoxFuture, ClientMode, Confirmer, HostConfig, Outcome,
+        PeerInfo,
+    },
+    sas::Sas,
     trust::TrustStore,
 };
 use tokio::{
@@ -88,6 +92,13 @@ enum Cmd {
         /// its address to connect.
         #[arg(long)]
         no_advertise: bool,
+        /// Ask here, on this terminal, before letting a paired device connect. Needs a
+        /// terminal, so it does not work under `tether service`.
+        #[arg(long)]
+        confirm: bool,
+        /// Skip comparing symbols when someone pairs, and trust the pairing code alone.
+        #[arg(long)]
+        no_verify: bool,
     },
     /// Ask a paired host that is a wake relay to wake one of its computers.
     Wake {
@@ -107,6 +118,9 @@ enum Cmd {
         addr: String,
         #[arg(long)]
         code: String,
+        /// Skip comparing symbols with the host, and trust the pairing code alone.
+        #[arg(long)]
+        no_verify: bool,
     },
     /// List Tether devices visible on the local network, and which of them you have paired.
     Discover {
@@ -296,6 +310,8 @@ async fn run() -> Result<()> {
             clipboard,
             wake,
             no_advertise,
+            confirm,
+            no_verify,
         } => {
             listen(
                 ctx,
@@ -309,6 +325,7 @@ async fn run() -> Result<()> {
                 clipboard,
                 wake,
                 !no_advertise,
+                Terminal::new(confirm, !no_verify),
             )
             .await
         }
@@ -316,7 +333,11 @@ async fn run() -> Result<()> {
         Cmd::Quick { target, pings } => quick(ctx, &target, pings).await,
         Cmd::Wake { addr, target } => wake_via(ctx, &addr, &target).await,
         Cmd::Clip { action } => clip(ctx, action).await,
-        Cmd::Pair { addr, code } => pair_with(ctx, &addr, code).await,
+        Cmd::Pair {
+            addr,
+            code,
+            no_verify,
+        } => pair_with(ctx, &addr, code, !no_verify).await,
         Cmd::Connect { addr, pings } => connect_to(ctx, &addr, pings).await,
         Cmd::Peers { action } => peers(ctx, action),
     }
@@ -413,6 +434,7 @@ async fn listen(
     clipboard: bool,
     wake: Vec<String>,
     advertise: bool,
+    terminal: Arc<Terminal>,
 ) -> Result<()> {
     let own_key = ctx.identity.public;
     let own_name = ctx.name.clone();
@@ -497,9 +519,10 @@ async fn listen(
                 };
                 let _ = stream.set_nodelay(true);
                 let host = host.clone();
+                let terminal = terminal.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    match accept(stream, &host).await {
+                    match accept_with(stream, &host, Some(&*terminal)).await {
                         Ok(Outcome::Authenticated(session)) => {
                             let peer = session.peer.clone();
                             tracing::info!(%remote, peer = %peer.name, fingerprint = %peer.fingerprint(), permissions = %session.permissions, "session opened");
@@ -533,15 +556,17 @@ async fn dial(addr: &str) -> Result<TcpStream> {
     Ok(stream)
 }
 
-async fn pair_with(ctx: Ctx, addr: &str, code: String) -> Result<()> {
+async fn pair_with(ctx: Ctx, addr: &str, code: String, verify: bool) -> Result<()> {
     let mut trust = TrustStore::load(ctx.paths.trust_file())?;
     let stream = dial(addr).await?;
-    match connect(
+    let terminal = Terminal::new(false, verify);
+    match connect_with(
         stream,
         &ctx.identity,
         &mut trust,
         &ctx.name,
         ClientMode::Pair { code },
+        Some(&*terminal),
     )
     .await?
     {
@@ -735,4 +760,73 @@ async fn quick(ctx: Ctx, target: &str, pings: u32) -> Result<()> {
         .with_context(|| format!("found {name} but could not connect"))?;
     println!("found at     {addr}");
     run_session(ctx, stream, pings, Some(key)).await
+}
+
+/// Asks the person at this terminal. One question at a time, so prompts from two devices
+/// connecting together do not interleave.
+struct Terminal {
+    /// Ask before letting a paired device connect.
+    approve: bool,
+    /// Ask people to compare symbols when pairing.
+    verify: bool,
+    one_at_a_time: tokio::sync::Mutex<()>,
+}
+
+impl Terminal {
+    fn new(approve: bool, verify: bool) -> Arc<Self> {
+        Arc::new(Self {
+            approve,
+            verify,
+            one_at_a_time: tokio::sync::Mutex::new(()),
+        })
+    }
+}
+
+/// True only for `y` or `yes`. End of input (no terminal) counts as no.
+async fn ask_yes_no(question: String) -> bool {
+    tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        print!("{question}");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(n) if n > 0 => matches!(line.trim().to_lowercase().as_str(), "y" | "yes"),
+            _ => false,
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+impl Confirmer for Terminal {
+    fn approve_connection<'a>(&'a self, peer: &'a PeerInfo) -> BoxFuture<'a, bool> {
+        Box::pin(async move {
+            if !self.approve {
+                return true;
+            }
+            let _turn = self.one_at_a_time.lock().await;
+            ask_yes_no(format!(
+                "\n{} ({}) {} wants to connect. Allow? [y/N] ",
+                peer.name,
+                peer.platform,
+                peer.fingerprint()
+            ))
+            .await
+        })
+    }
+
+    fn verify_sas<'a>(&'a self, sas: &'a Sas, peer: &'a PeerInfo) -> BoxFuture<'a, bool> {
+        Box::pin(async move {
+            if !self.verify {
+                return true;
+            }
+            let _turn = self.one_at_a_time.lock().await;
+            let emoji = sas.emoji();
+            println!("\nCompare with {} ({}):", peer.name, peer.platform);
+            println!("  {}", emoji.map(|(s, _)| s).join("  "));
+            println!("  {}", emoji.map(|(_, n)| n).join(", "));
+            println!("  or as numbers: {}", sas.digits());
+            ask_yes_no("Does the other device show the same? [y/N] ".to_owned()).await
+        })
+    }
 }

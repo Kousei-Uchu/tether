@@ -242,6 +242,12 @@ details.advanced > :last-child { margin-bottom: 18px; }
 .welcome-steps > div { display: flex; gap: 12px; align-items: flex-start; }
 .step-n { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 12px; display: grid; place-items: center; margin-top: 1px; }
 .computers { display: grid; gap: 10px; margin-bottom: 18px; }
+#prompt-dialog { background: var(--card); color: var(--text); border: 1px solid var(--line-strong); border-radius: 14px; padding: 22px 24px; max-width: 460px; }
+#prompt-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.sas { display: flex; flex-wrap: wrap; gap: 10px 14px; justify-content: center; margin: 16px 0 8px; }
+.sas-item { text-align: center; min-width: 58px; }
+.sas-symbol { font-size: 34px; line-height: 1.2; }
+.sas-name { font-size: 11px; color: var(--muted); }
 #nearby { display: grid; gap: 10px; }
 #nearby:not(:empty) { margin-bottom: 10px; }
 .computer {

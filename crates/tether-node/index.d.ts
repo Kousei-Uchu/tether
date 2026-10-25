@@ -19,6 +19,26 @@ export interface NearbyDevice {
   compatible: boolean;
 }
 
+export interface EmojiSymbol {
+  symbol: string;
+  name: string;
+}
+
+/**
+ * A question for the person. `connection`: allow this paired device to connect?
+ * `verify`: do these symbols match what the other device shows?
+ */
+export interface Prompt {
+  id: number;
+  kind: 'connection' | 'verify';
+  peerName: string;
+  peerPlatform: string;
+  peerFingerprint: string;
+  emoji: EmojiSymbol[];
+  /** The same string as digits, `0000-0000-00000`. */
+  digits: string;
+}
+
 export interface PairingOptions {
   /** Permissions for the device that pairs with the code. Defaults to ["view"]. */
   grant?: string[];
@@ -67,7 +87,12 @@ export class Device {
   revoke(query: string, permissions: string[]): PeerSummary[];
   /** Returns how many devices were unpaired. */
   remove(query: string): number;
-  pair(address: string, code: string): Promise<PeerSummary>;
+  /** Questions waiting for the person. Poll this and call answerPrompt. */
+  pendingPrompts(): Prompt[];
+  /** False if the question already timed out. */
+  answerPrompt(id: number, accept: boolean): boolean;
+  /** With `verify: true`, pairing also asks the person to compare symbols with the host. Off by default. */
+  pair(address: string, code: string, verify?: boolean | null): Promise<PeerSummary>;
   connect(address: string): Promise<Connection>;
   /** Looks for Tether devices on the local network for `seconds` (default 3, at most 15). */
   discover(seconds?: number | null): Promise<NearbyDevice[]>;
@@ -88,6 +113,10 @@ export class Device {
     wake?: string[] | null,
     /** Announce this device on the local network. Defaults to true. */
     advertise?: boolean | null,
+    /** Ask before each connection from a paired device (see pendingPrompts). Off by default. */
+    confirm?: boolean | null,
+    /** Ask the person to compare symbols when someone pairs (see pendingPrompts). Off by default. */
+    verify?: boolean | null,
   ): Promise<HostHandle>;
 }
 

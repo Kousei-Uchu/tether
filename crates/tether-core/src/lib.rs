@@ -10,6 +10,8 @@ pub mod media;
 pub mod pairing;
 pub mod paths;
 pub mod permissions;
+pub mod prompt;
+pub mod sas;
 pub mod session;
 pub mod trust;
 pub mod wake;

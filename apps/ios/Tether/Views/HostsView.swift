@@ -64,6 +64,10 @@ struct HostsView: View {
                     Text("Computers show this code when you pair, so you can check it is really your phone.")
                 }
             }
+            .sheet(item: $model.verifyPrompt) { prompt in
+                VerifyView(prompt: prompt)
+                    .environmentObject(model)
+            }
             .onAppear { discovery.start() }
             .onDisappear { discovery.stop() }
             .navigationTitle("Tether")

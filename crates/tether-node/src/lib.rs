@@ -25,7 +25,8 @@ use tether_core::{
     paths::{default_device_name, Paths},
     permissions::PermissionSet,
     proto::{InputEvent, Key, MouseButton, Permission},
-    session::{accept, connect, ClientMode, HostConfig, Outcome, Session},
+    prompt::{PromptQueue, QueueConfirmer},
+    session::{accept_with, connect, connect_with, ClientMode, Confirmer, HostConfig, Outcome, Session},
     trust::TrustStore,
 };
 use tether_input::EnigoInput;
@@ -133,6 +134,27 @@ pub struct NearbyDevice {
     pub paired: bool,
     /// False if it speaks a different protocol version and so cannot connect.
     pub compatible: bool,
+}
+
+#[napi(object)]
+pub struct EmojiJs {
+    pub symbol: String,
+    pub name: String,
+}
+
+/// A question for the person. `kind` is `"connection"` (allow this device to connect?) or
+/// `"verify"` (do these symbols match what the other device shows?). Answer with
+/// `Device.answerPrompt`.
+#[napi(object)]
+pub struct PromptJs {
+    pub id: u32,
+    pub kind: String,
+    pub peer_name: String,
+    pub peer_platform: String,
+    pub peer_fingerprint: String,
+    pub emoji: Vec<EmojiJs>,
+    /// The same string as digits, `0000-0000-00000`.
+    pub digits: String,
 }
 
 #[napi(object)]
@@ -262,6 +284,7 @@ pub struct Device {
     paths: Paths,
     identity: Arc<Identity>,
     name: String,
+    prompts: Arc<PromptQueue>,
 }
 
 #[napi]
@@ -276,6 +299,7 @@ impl Device {
             paths,
             identity: Arc::new(identity),
             name: name.unwrap_or_else(default_device_name),
+            prompts: PromptQueue::new(),
         })
     }
 
@@ -302,6 +326,35 @@ impl Device {
 
     fn store(&self) -> Result<TrustStore> {
         TrustStore::load(self.paths.trust_file()).map_err(err)
+    }
+
+    /// Questions waiting for the person: allow a connection, or compare pairing symbols.
+    /// Poll this, show what is there, and call `answerPrompt`.
+    #[napi]
+    pub fn pending_prompts(&self) -> Vec<PromptJs> {
+        self.prompts
+            .pending()
+            .into_iter()
+            .map(|p| PromptJs {
+                id: p.id as u32,
+                kind: p.kind.name().to_owned(),
+                peer_name: p.peer_name,
+                peer_platform: p.peer_platform,
+                peer_fingerprint: p.peer_fingerprint,
+                emoji: p
+                    .emoji
+                    .into_iter()
+                    .map(|(symbol, name)| EmojiJs { symbol, name })
+                    .collect(),
+                digits: p.digits,
+            })
+            .collect()
+    }
+
+    /// Answers a question from `pendingPrompts`. False if it already timed out.
+    #[napi]
+    pub fn answer_prompt(&self, id: u32, accept: bool) -> bool {
+        self.prompts.answer(u64::from(id), accept)
     }
 
     /// Devices paired with this machine and what each may do here.
@@ -349,15 +402,26 @@ impl Device {
 
     /// Pairs with a host that is showing `code`.
     #[napi]
-    pub async fn pair(&self, address: String, code: String) -> Result<PeerSummary> {
+    pub async fn pair(
+        &self,
+        address: String,
+        code: String,
+        verify: Option<bool>,
+    ) -> Result<PeerSummary> {
         let mut store = self.store()?;
         let stream = dial(&address).await?;
-        match connect(
+        let person = verify.unwrap_or(false).then(|| QueueConfirmer {
+            queue: self.prompts.clone(),
+            ask_connections: false,
+            ask_verification: true,
+        });
+        match connect_with(
             stream,
             &self.identity,
             &mut store,
             &self.name,
             ClientMode::Pair { code },
+            person.as_ref().map(|p| p as &dyn Confirmer),
         )
         .await
         .map_err(err)?
@@ -477,6 +541,8 @@ impl Device {
         audio: Option<String>,
         wake: Option<Vec<String>>,
         advertise: Option<bool>,
+        confirm: Option<bool>,
+        verify: Option<bool>,
     ) -> Result<HostHandle> {
         let offer = match pairing {
             None => None,
@@ -554,7 +620,12 @@ impl Device {
             None
         };
 
-        tokio::spawn(accept_loop(listener, host, events.clone(), stop_rx));
+        let person = Arc::new(QueueConfirmer {
+            queue: self.prompts.clone(),
+            ask_connections: confirm.unwrap_or(false),
+            ask_verification: verify.unwrap_or(false),
+        });
+        tokio::spawn(accept_loop(listener, host, person, events.clone(), stop_rx));
         Ok(HostHandle {
             address,
             code,
@@ -864,6 +935,7 @@ fn push(events: &Events, kind: &str, message: String) {
 async fn accept_loop(
     listener: TcpListener,
     host: Arc<HostConfig>,
+    person: Arc<QueueConfirmer>,
     events: Events,
     mut stop: watch::Receiver<bool>,
 ) {
@@ -876,12 +948,17 @@ async fn accept_loop(
                 let Ok((stream, remote)) = res else { continue };
                 let Ok(permit) = limit.clone().try_acquire_owned() else { continue };
                 let _ = stream.set_nodelay(true);
-                let (host, events, mut stop) = (host.clone(), events.clone(), session_stop.clone());
+                let (host, person, events, mut stop) = (
+                    host.clone(),
+                    person.clone(),
+                    events.clone(),
+                    session_stop.clone(),
+                );
                 tokio::spawn(async move {
                     let _permit = permit;
                     tokio::select! {
                         _ = stop.wait_for(|stopped| *stopped) => {}
-                        _ = handle(stream, remote.to_string(), host, events) => {}
+                        _ = handle(stream, remote.to_string(), host, person, events) => {}
                     }
                 });
             }
@@ -889,8 +966,14 @@ async fn accept_loop(
     }
 }
 
-async fn handle(stream: TcpStream, remote: String, host: Arc<HostConfig>, events: Events) {
-    match accept(stream, &host).await {
+async fn handle(
+    stream: TcpStream,
+    remote: String,
+    host: Arc<HostConfig>,
+    person: Arc<QueueConfirmer>,
+    events: Events,
+) {
+    match accept_with(stream, &host, Some(&*person)).await {
         Ok(Outcome::Authenticated(session)) => {
             let who = format!("{} ({})", session.peer.name, session.peer.fingerprint());
             push(

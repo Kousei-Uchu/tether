@@ -17,7 +17,7 @@ cp "$LIB" "$WORK/py/"
 
 PORT=$((20000 + RANDOM % 20000))
 CLI="$PWD/target/debug/tether"
-"$CLI" --home "$WORK/host" --name ffi-host listen --bind "127.0.0.1:$PORT" --pair --grant view,media >"$WORK/host.log" 2>&1 &
+"$CLI" --home "$WORK/host" --name ffi-host listen --bind "127.0.0.1:$PORT" --pair --no-verify --grant view,media >"$WORK/host.log" 2>&1 &
 HOST_PID=$!
 for _ in $(seq 1 50); do grep -q "listening" "$WORK/host.log" 2>/dev/null && break; sleep 0.1; done
 

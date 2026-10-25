@@ -1,5 +1,7 @@
 // Drives the real window: pairs, connects, sees live permission changes and a revoke.
 // Run with: npm run e2e   (on Linux without a display: xvfb-run -a npm run e2e)
+// No person is here to compare symbols, so pairing runs on the code alone.
+process.env.TETHER_SKIP_VERIFY = '1';
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');

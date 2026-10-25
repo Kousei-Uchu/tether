@@ -13,6 +13,8 @@ const { Device, pairingLink, parsePairingLink, listDisplays } = require(bridgePa
 
 const smoke = process.argv.includes('--smoke');
 const PERMISSIONS = ['view', 'input', 'media', 'power', 'files'];
+// Pairing asks both people to compare symbols. Tests that pair without a person set this.
+const verifyPairing = process.env.TETHER_SKIP_VERIFY !== '1';
 
 // What the host may stream: nothing, the test pattern, or a display ("screen" or "screen:<id>").
 function videoSource(value) {
@@ -171,7 +173,9 @@ function registerIpc() {
   handle('peers:remove', (query) => device.remove(String(query)));
 
   handle('link:parse', (text) => parsePairingLink(String(text)));
-  handle('pair', (address, code) => device.pair(String(address), String(code)));
+  handle('pair', (address, code) => device.pair(String(address), String(code), verifyPairing));
+  handle('prompts:poll', () => device.pendingPrompts());
+  handle('prompts:answer', (id, accept) => device.answerPrompt(Number(id), Boolean(accept)));
 
   handle('connect', async (address) => {
     closeViewers();
@@ -260,7 +264,7 @@ function registerIpc() {
     return connection.wake(name);
   });
 
-  handle('host:start', async ({ bind, pairing, grant, video, audio, input, clipboard: shareClipboard, wake }) => {
+  handle('host:start', async ({ bind, pairing, grant, video, audio, input, clipboard: shareClipboard, wake, confirm }) => {
     if (host) throw new Error('Already accepting connections.');
     const options = pairing ? { grant: validPermissions(grant ?? ['view']) } : null;
     host = await device.listen(
@@ -276,6 +280,9 @@ function registerIpc() {
             .filter(Boolean)
             .slice(0, 20)
         : [],
+      true,
+      Boolean(confirm),
+      verifyPairing,
     );
     hostLog = [];
     hostLinks = await buildLinks();

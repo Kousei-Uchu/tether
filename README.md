@@ -83,6 +83,8 @@ tether clip get <host-address>
 
 To find computers without typing an address: a host announces itself on the local network (Bonjour, service `_tether._tcp`) while it is accepting connections, unless you pass `--no-advertise` to `tether listen`. **Look for devices** on the desktop's Computers page, `tether discover`, and the iPhone's "On this network" list show what is there and which you have paired. If a computer you know has changed address, **Connect** (and the iPhone's tap-to-connect) looks for it by fingerprint and uses the new address; from the terminal, `tether quick <name-or-fingerprint>` does the same. The announcement carries the device name, platform and public key, and is not trusted: connecting still verifies the key in the handshake. Some routers block multicast between Wi-Fi and Ethernet; connect by address then. The iPhone asks for Local Network access the first time.
 
+Pairing checks that nobody is in the middle: after the code is accepted, both devices show the same seven symbols (and the same number, for terminals) and each person confirms they match. Nothing is stored until both have said yes. If the symbols differ, choose "don't match" and try again on a network you trust. From the terminal, `tether pair` and `tether listen --pair` ask on the spot; `--no-verify` trusts the code alone. To approve each connection from an already paired device, tick **Ask before each connection** when starting to share, or pass `--confirm` to `tether listen` (it needs a terminal, so it does not work under `tether service`).
+
 Platform notes for the host:
 
 - macOS also asks for Screen Recording the first time a viewer connects. Allow it under System Settings, Privacy & Security, Screen Recording, then restart Tether.
@@ -272,6 +274,6 @@ previous step is applied.
 
 `Tether` is a working name. To rename, change the crate names in each `Cargo.toml` and the Node package names, the
 `[[bin]]` name in `crates/tether-cli/Cargo.toml`, the `ProjectDirs` string in
-`crates/tether-core/src/paths.rs`, and the `tether/5` prologue in `crates/tether-proto`
+`crates/tether-core/src/paths.rs`, and the `tether/6` prologue in `crates/tether-proto`
 (changing the prologue breaks compatibility with older builds, which is fine before release).
 The prologue is `tether/<protocol version>`, so keep the two in step.

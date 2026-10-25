@@ -11,12 +11,15 @@ use crate::{
     input::{InputProvider, InputSink},
     media::MediaProvider,
     pairing::{self, PairingOffer, ProofRole},
+    sas::{self, Sas},
     permissions::{PermissionDenied, PermissionSet},
     trust::{TrustStore, TrustedPeer},
     wake::WakeProvider,
 };
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
+    pin::Pin,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -31,6 +34,9 @@ use tokio::{
 };
 
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a person gets to answer a question: allow a connection, or confirm that the
+/// pairing symbols match. Only applies after the other device has proved who it is.
+pub const HUMAN_TIMEOUT: Duration = Duration::from_secs(120);
 /// A host drops a client it has not heard from for this long. Clients keep the session
 /// alive with pings, including while video is playing.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -67,6 +73,10 @@ pub enum SessionError {
     VersionMismatch { ours: u16, theirs: u16 },
     #[error("pairing failed: {0}")]
     PairingFailed(String),
+    #[error("the connection was declined")]
+    Declined,
+    #[error("verification failed: {0}")]
+    VerificationFailed(String),
     #[error("invalid pairing code; expected 16 letters and digits like XXXX-XXXX-XXXX-XXXX")]
     InvalidCode,
     #[error("protocol violation: {0}")]
@@ -89,6 +99,119 @@ pub struct PeerInfo {
 impl PeerInfo {
     pub fn fingerprint(&self) -> String {
         fingerprint(&self.public_key)
+    }
+}
+
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// The people behind the two devices. Passed to [`accept_with`] and [`connect_with`]; without
+/// one, every question is answered yes and the code (for pairing) or the trust list (for
+/// connecting) is all that decides.
+pub trait Confirmer: Send + Sync {
+    /// Host side: a paired device wants to connect. Return false to turn it away.
+    fn approve_connection<'a>(&'a self, _peer: &'a PeerInfo) -> BoxFuture<'a, bool> {
+        Box::pin(async { true })
+    }
+
+    /// Both sides, while pairing: the person compares `sas` with the other device's screen.
+    /// Return true only if they match. Pairing completes only if both people say yes.
+    fn verify_sas<'a>(&'a self, _sas: &'a Sas, _peer: &'a PeerInfo) -> BoxFuture<'a, bool> {
+        Box::pin(async { true })
+    }
+}
+
+async fn within<T>(
+    limit: Duration,
+    fut: impl Future<Output = Result<T, SessionError>>,
+) -> Result<T, SessionError> {
+    timeout(limit, fut).await.map_err(|_| SessionError::Timeout)?
+}
+
+/// The pairing comparison, after the code has been checked. Client commits, host answers
+/// with its value, client reveals; both derive the same string, ask their person, and swap
+/// decisions. Ok only if both said yes. See `sas` for why the order matters.
+async fn verify_exchange<S>(
+    ch: &mut SecureChannel<S>,
+    peer: &PeerInfo,
+    role: Role,
+    confirm: Option<&dyn Confirmer>,
+) -> Result<(), SessionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    use rand::RngCore;
+    let hash = ch.handshake_hash().to_vec();
+    let mut mine = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut mine);
+
+    let value = match role {
+        Role::Initiator => {
+            let theirs = within(AUTH_TIMEOUT, async {
+                ch.send(&Message::VerifyCommit {
+                    commitment: sas::commitment(&hash, &mine),
+                })
+                .await?;
+                match ch.recv().await? {
+                    Message::VerifyNonce { nonce } => Ok(nonce),
+                    Message::Reject { reason } => Err(SessionError::PairingFailed(reason)),
+                    _ => Err(SessionError::Protocol("expected verification value")),
+                }
+            })
+            .await?;
+            within(AUTH_TIMEOUT, async {
+                ch.send(&Message::VerifyReveal { nonce: mine }).await?;
+                Ok(())
+            })
+            .await?;
+            Sas::derive(&hash, &mine, &theirs)
+        }
+        Role::Responder => {
+            let commitment = within(AUTH_TIMEOUT, async {
+                match ch.recv().await? {
+                    Message::VerifyCommit { commitment } => Ok(commitment),
+                    _ => Err(SessionError::Protocol("expected verification commitment")),
+                }
+            })
+            .await?;
+            let theirs = within(AUTH_TIMEOUT, async {
+                ch.send(&Message::VerifyNonce { nonce: mine }).await?;
+                match ch.recv().await? {
+                    Message::VerifyReveal { nonce } => Ok(nonce),
+                    _ => Err(SessionError::Protocol("expected verification reveal")),
+                }
+            })
+            .await?;
+            if sas::commitment(&hash, &theirs) != commitment {
+                return Err(SessionError::VerificationFailed(
+                    "the other device changed its value after committing to it".into(),
+                ));
+            }
+            Sas::derive(&hash, &theirs, &mine)
+        }
+    };
+
+    let ours = match confirm {
+        Some(c) => timeout(HUMAN_TIMEOUT, c.verify_sas(&value, peer))
+            .await
+            .unwrap_or(false),
+        None => true,
+    };
+    let theirs = within(HUMAN_TIMEOUT, async {
+        ch.send(&Message::VerifyDecision { accepted: ours }).await?;
+        match ch.recv().await? {
+            Message::VerifyDecision { accepted } => Ok(accepted),
+            _ => Err(SessionError::Protocol("expected verification decision")),
+        }
+    })
+    .await?;
+    match (ours, theirs) {
+        (true, true) => Ok(()),
+        (false, _) => Err(SessionError::VerificationFailed(
+            "you did not confirm that the symbols match".into(),
+        )),
+        (true, false) => Err(SessionError::VerificationFailed(
+            "the other device did not confirm that the symbols match".into(),
+        )),
     }
 }
 
@@ -161,45 +284,88 @@ fn check_hello(msg: Message) -> Result<Hello, SessionError> {
     }
 }
 
-/// Host side: authenticate one inbound connection.
+/// Host side: authenticate one inbound connection, with nobody to ask.
 pub async fn accept<S>(stream: S, host: &HostConfig) -> Result<Outcome<S>, SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    timeout(AUTH_TIMEOUT, accept_inner(stream, host))
-        .await
-        .map_err(|_| SessionError::Timeout)?
+    accept_with(stream, host, None).await
 }
 
-async fn accept_inner<S>(stream: S, host: &HostConfig) -> Result<Outcome<S>, SessionError>
+/// Host side: like [`accept`], but `confirm` is asked to approve connections from paired
+/// devices and to compare the pairing symbols.
+pub async fn accept_with<S>(
+    stream: S,
+    host: &HostConfig,
+    confirm: Option<&dyn Confirmer>,
+) -> Result<Outcome<S>, SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut ch = SecureChannel::handshake(stream, &host.identity, Role::Responder).await?;
-    let remote_key = *ch.remote_static();
-
-    let theirs = check_hello(ch.recv().await?)?;
-    ch.send(&hello(&host.device_name, Intent::Connect)).await?;
-    let peer = PeerInfo {
-        name: theirs.device_name.clone(),
-        platform: theirs.platform,
-        public_key: remote_key,
-    };
+    // Everything up to here is machine to machine and has a short limit. Waiting for a
+    // person only starts once the other device has shown it is paired or knows the code.
+    let (mut ch, theirs, peer) = within(AUTH_TIMEOUT, async {
+        let mut ch = SecureChannel::handshake(stream, &host.identity, Role::Responder).await?;
+        let remote_key = *ch.remote_static();
+        let theirs = check_hello(ch.recv().await?)?;
+        ch.send(&hello(&host.device_name, Intent::Connect)).await?;
+        let peer = PeerInfo {
+            name: theirs.device_name.clone(),
+            platform: theirs.platform,
+            public_key: remote_key,
+        };
+        Ok((ch, theirs, peer))
+    })
+    .await?;
+    let remote_key = peer.public_key;
 
     match theirs.intent {
         Intent::Connect => {
-            let Some(permissions) = host.permissions_for(&remote_key)? else {
-                ch.send(&Message::Reject {
-                    reason: "this device is not paired".into(),
+            let mut asked = false;
+            let permissions = loop {
+                let Some(p) = host.permissions_for(&remote_key)? else {
+                    within(AUTH_TIMEOUT, async {
+                        ch.send(&Message::Reject {
+                            reason: "this device is not paired".into(),
+                        })
+                        .await?;
+                        Ok(())
+                    })
+                    .await?;
+                    return Err(SessionError::PeerNotTrusted {
+                        fingerprint: peer.fingerprint(),
+                    });
+                };
+                match confirm {
+                    Some(c) if !asked => {
+                        asked = true;
+                        let allowed = timeout(HUMAN_TIMEOUT, c.approve_connection(&peer))
+                            .await
+                            .unwrap_or(false);
+                        if !allowed {
+                            let _ = within(AUTH_TIMEOUT, async {
+                                ch.send(&Message::Reject {
+                                    reason: "the host declined the connection".into(),
+                                })
+                                .await?;
+                                Ok(())
+                            })
+                            .await;
+                            return Err(SessionError::Declined);
+                        }
+                        // Looped to read the permissions again: they may have changed, or
+                        // been revoked, while the person was deciding.
+                    }
+                    _ => break p,
+                }
+            };
+            within(AUTH_TIMEOUT, async {
+                ch.send(&Message::Ready).await?;
+                ch.send(&Message::Permissions {
+                    granted: permissions.to_vec(),
                 })
                 .await?;
-                return Err(SessionError::PeerNotTrusted {
-                    fingerprint: peer.fingerprint(),
-                });
-            };
-            ch.send(&Message::Ready).await?;
-            ch.send(&Message::Permissions {
-                granted: permissions.to_vec(),
+                Ok(())
             })
             .await?;
             Ok(Outcome::Authenticated(Session {
@@ -211,11 +377,20 @@ where
             }))
         }
         Intent::Pair => {
-            let Message::PairRequest { proof } = ch.recv().await? else {
+            let Message::PairRequest { proof } =
+                within(AUTH_TIMEOUT, async { Ok(ch.recv().await?) }).await?
+            else {
                 return Err(SessionError::Protocol("expected pair request"));
             };
             match consume_pairing(host, &proof, ch.handshake_hash()) {
                 Ok((host_proof, grant)) => {
+                    within(AUTH_TIMEOUT, async {
+                        ch.send(&Message::PairAccept { proof: host_proof }).await?;
+                        Ok(())
+                    })
+                    .await?;
+                    // The device is stored only after both people have confirmed.
+                    verify_exchange(&mut ch, &peer, Role::Responder, confirm).await?;
                     host.trust
                         .lock()
                         .expect("trust lock")
@@ -225,12 +400,15 @@ where
                             peer.platform,
                             grant,
                         ))?;
-                    ch.send(&Message::PairAccept { proof: host_proof }).await?;
                     Ok(Outcome::Paired(peer))
                 }
                 Err(reason) => {
-                    ch.send(&Message::Reject {
-                        reason: reason.clone(),
+                    within(AUTH_TIMEOUT, async {
+                        ch.send(&Message::Reject {
+                            reason: reason.clone(),
+                        })
+                        .await?;
+                        Ok(())
                     })
                     .await?;
                     Err(SessionError::PairingFailed(reason))
@@ -273,7 +451,7 @@ pub enum ClientMode {
     Pair { code: String },
 }
 
-/// Client side: connect to a host, either as a normal session or to pair.
+/// Client side: connect to a host, either as a normal session or to pair, with nobody to ask.
 pub async fn connect<S>(
     stream: S,
     identity: &Identity,
@@ -284,25 +462,25 @@ pub async fn connect<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    timeout(
-        AUTH_TIMEOUT,
-        connect_inner(stream, identity, trust, device_name, mode),
-    )
-    .await
-    .map_err(|_| SessionError::Timeout)?
+    connect_with(stream, identity, trust, device_name, mode, None).await
 }
 
-async fn connect_inner<S>(
+/// Like [`connect`], but `confirm` is asked to compare the pairing symbols.
+pub async fn connect_with<S>(
     stream: S,
     identity: &Identity,
     trust: &mut TrustStore,
     device_name: &str,
     mode: ClientMode,
+    confirm: Option<&dyn Confirmer>,
 ) -> Result<Outcome<S>, SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut ch = SecureChannel::handshake(stream, identity, Role::Initiator).await?;
+    let mut ch = within(AUTH_TIMEOUT, async {
+        Ok(SecureChannel::handshake(stream, identity, Role::Initiator).await?)
+    })
+    .await?;
     let host_key = *ch.remote_static();
 
     match mode {
@@ -318,16 +496,27 @@ where
                     fingerprint: fingerprint(&host_key),
                 });
             }
-            ch.send(&hello(device_name, Intent::Connect)).await?;
-            let theirs = check_hello(ch.recv().await?)?;
-            match ch.recv().await? {
-                Message::Ready => {}
-                Message::Reject { reason } => return Err(SessionError::Rejected(reason)),
-                _ => return Err(SessionError::Protocol("expected ready")),
-            }
-            let Message::Permissions { granted } = ch.recv().await? else {
-                return Err(SessionError::Protocol("expected permissions"));
-            };
+            let theirs = within(AUTH_TIMEOUT, async {
+                ch.send(&hello(device_name, Intent::Connect)).await?;
+                check_hello(ch.recv().await?)
+            })
+            .await?;
+            // The host may be waiting for a person to press Allow.
+            within(HUMAN_TIMEOUT, async {
+                match ch.recv().await? {
+                    Message::Ready => Ok(()),
+                    Message::Reject { reason } => Err(SessionError::Rejected(reason)),
+                    _ => Err(SessionError::Protocol("expected ready")),
+                }
+            })
+            .await?;
+            let granted = within(AUTH_TIMEOUT, async {
+                match ch.recv().await? {
+                    Message::Permissions { granted } => Ok(granted),
+                    _ => Err(SessionError::Protocol("expected permissions")),
+                }
+            })
+            .await?;
             let peer = PeerInfo {
                 name: theirs.device_name,
                 platform: theirs.platform,
@@ -343,27 +532,34 @@ where
         }
         ClientMode::Pair { code } => {
             let code = pairing::normalize_code(&code).ok_or(SessionError::InvalidCode)?;
-            ch.send(&hello(device_name, Intent::Pair)).await?;
-            let theirs = check_hello(ch.recv().await?)?;
-
-            let proof = pairing::proof(&code, ProofRole::Client, ch.handshake_hash());
-            ch.send(&Message::PairRequest { proof }).await?;
-            match ch.recv().await? {
-                Message::PairAccept { proof } => {
-                    if !pairing::verify(&code, ProofRole::Host, ch.handshake_hash(), &proof) {
-                        return Err(SessionError::PairingFailed(
-                            "the host could not prove it knows the code".into(),
-                        ));
+            let theirs = within(AUTH_TIMEOUT, async {
+                ch.send(&hello(device_name, Intent::Pair)).await?;
+                check_hello(ch.recv().await?)
+            })
+            .await?;
+            within(AUTH_TIMEOUT, async {
+                let proof = pairing::proof(&code, ProofRole::Client, ch.handshake_hash());
+                ch.send(&Message::PairRequest { proof }).await?;
+                match ch.recv().await? {
+                    Message::PairAccept { proof } => {
+                        if !pairing::verify(&code, ProofRole::Host, ch.handshake_hash(), &proof) {
+                            return Err(SessionError::PairingFailed(
+                                "the host could not prove it knows the code".into(),
+                            ));
+                        }
+                        Ok(())
                     }
+                    Message::Reject { reason } => Err(SessionError::PairingFailed(reason)),
+                    _ => Err(SessionError::Protocol("expected pair accept")),
                 }
-                Message::Reject { reason } => return Err(SessionError::PairingFailed(reason)),
-                _ => return Err(SessionError::Protocol("expected pair accept")),
-            }
+            })
+            .await?;
             let peer = PeerInfo {
                 name: theirs.device_name,
                 platform: theirs.platform,
                 public_key: host_key,
             };
+            verify_exchange(&mut ch, &peer, Role::Initiator, confirm).await?;
             // A client keeps the host as identity only; permissions apply to the host's side.
             trust.add(TrustedPeer::new(
                 peer.name.clone(),

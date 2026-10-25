@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Bumped on any incompatible wire change. Peers must match exactly for now.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 pub const DEFAULT_PORT: u16 = 7420;
 /// Upper bound for one decoded message. Larger messages are rejected by the channel.
 pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
@@ -16,7 +16,7 @@ pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 pub const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 /// Mixed into the Noise handshake so a version mismatch fails the handshake itself.
-pub const PROLOGUE: &[u8] = b"tether/5";
+pub const PROLOGUE: &[u8] = b"tether/6";
 
 pub type Proof = [u8; 32];
 
@@ -439,6 +439,24 @@ pub enum Message {
     ClipboardData {
         text: Option<String>,
     },
+    /// Pairing, client to host: a hash of the client's random value, sent before the host
+    /// reveals its own so neither side can steer the comparison string (see `sas`).
+    VerifyCommit {
+        commitment: [u8; 32],
+    },
+    /// Pairing, host to client: the host's random value.
+    VerifyNonce {
+        nonce: [u8; 32],
+    },
+    /// Pairing, client to host: the value behind the commitment.
+    VerifyReveal {
+        nonce: [u8; 32],
+    },
+    /// Pairing, both ways: whether the person confirmed the symbols match. A device is only
+    /// stored if both said yes.
+    VerifyDecision {
+        accepted: bool,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -517,6 +535,21 @@ mod tests {
         ];
         for m in msgs {
             let bytes = encode(&m).unwrap();
+            assert_eq!(decode(&bytes).unwrap(), m);
+        }
+    }
+
+    #[test]
+    fn verification_messages_are_appended_in_order() {
+        let msgs = [
+            (19, Message::VerifyCommit { commitment: [1; 32] }),
+            (20, Message::VerifyNonce { nonce: [2; 32] }),
+            (21, Message::VerifyReveal { nonce: [3; 32] }),
+            (22, Message::VerifyDecision { accepted: true }),
+        ];
+        for (index, m) in msgs {
+            let bytes = encode(&m).unwrap();
+            assert_eq!(bytes[0], index);
             assert_eq!(decode(&bytes).unwrap(), m);
         }
     }

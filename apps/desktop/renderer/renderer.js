@@ -590,6 +590,7 @@ function hostSettings() {
     audio: $('share-audio').checked,
     input: $('allow-input').checked,
     clipboard: $('allow-clipboard').checked,
+    confirm: $('confirm-connections').checked,
     wake: $('wake-targets').value,
     grant: chosenGrant(),
   };
@@ -604,7 +605,7 @@ function restoreHostSettings() {
   }
   if (!saved || typeof saved !== 'object') return;
   if (typeof saved.bind === 'string' && saved.bind) $('bind').value = saved.bind;
-  for (const [id, key] of [['pairing', 'pairing'], ['video', 'video'], ['share-audio', 'audio'], ['allow-input', 'input'], ['allow-clipboard', 'clipboard']]) {
+  for (const [id, key] of [['pairing', 'pairing'], ['video', 'video'], ['share-audio', 'audio'], ['allow-input', 'input'], ['allow-clipboard', 'clipboard'], ['confirm-connections', 'confirm']]) {
     if (typeof saved[key] === 'boolean') $(id).checked = saved[key];
   }
   if (typeof saved.wake === 'string') $('wake-targets').value = saved.wake;
@@ -632,6 +633,7 @@ $('host-start').addEventListener('click', () =>
       input: $('allow-input').checked,
       wake: $('wake-targets').value.split('\n'),
       clipboard: $('allow-clipboard').checked,
+      confirm: $('confirm-connections').checked,
       grant: chosenGrant(),
     });
     showHost(state);
@@ -747,3 +749,61 @@ $('scan-btn').addEventListener('click', () =>
     }
   }),
 );
+
+// ----- questions for the person: allow a connection, compare pairing symbols -----
+let shownPrompt = null;
+
+function showPrompt(p) {
+  shownPrompt = p.id;
+  const verify = p.kind === 'verify';
+  $('prompt-title').textContent = verify ? `Check ${p.peerName}` : `${p.peerName} wants to connect`;
+  $('prompt-text').textContent = verify
+    ? 'Both screens must show exactly these symbols, in this order. If they differ, someone may be interfering: choose "They don\u2019t match".'
+    : `${p.peerName} (${p.peerPlatform}), ${p.peerFingerprint}. Allow it to connect to this computer?`;
+  $('prompt-emoji').hidden = !verify;
+  $('prompt-emoji').replaceChildren(
+    ...p.emoji.map((e) =>
+      el(
+        'div',
+        { className: 'sas-item' },
+        el('div', { className: 'sas-symbol', textContent: e.symbol }),
+        el('div', { className: 'sas-name', textContent: e.name }),
+      ),
+    ),
+  );
+  $('prompt-digits').hidden = !verify;
+  $('prompt-digits').textContent = verify ? `Or as numbers: ${p.digits}` : '';
+  $('prompt-yes').textContent = verify ? 'They match' : 'Allow';
+  $('prompt-no').textContent = verify ? 'They don\u2019t match' : 'Deny';
+  if (!$('prompt-dialog').open) $('prompt-dialog').showModal();
+}
+
+async function answerPrompt(accept) {
+  const id = shownPrompt;
+  shownPrompt = null;
+  $('prompt-dialog').close();
+  if (id !== null) await window.tether.answerPrompt(id, accept).catch(() => {});
+}
+
+$('prompt-yes').addEventListener('click', () => answerPrompt(true));
+$('prompt-no').addEventListener('click', () => answerPrompt(false));
+// Escape counts as no.
+$('prompt-dialog').addEventListener('cancel', (e) => {
+  e.preventDefault();
+  answerPrompt(false);
+});
+
+setInterval(async () => {
+  try {
+    const first = (await window.tether.pollPrompts())[0];
+    if (first) {
+      if (first.id !== shownPrompt) showPrompt(first);
+    } else if (shownPrompt !== null) {
+      // It timed out or was answered elsewhere.
+      shownPrompt = null;
+      $('prompt-dialog').close();
+    }
+  } catch {
+    // the bridge is busy or closing; try again next tick
+  }
+}, 700);

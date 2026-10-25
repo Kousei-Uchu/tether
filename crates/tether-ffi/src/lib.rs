@@ -16,7 +16,8 @@ use tether_core::{
     link::{with_default_port, PairingLink},
     paths::Paths,
     proto::{InputEvent, Key, MouseButton},
-    session::{connect, ClientMode, Outcome, Session},
+    prompt::{PromptKind, PromptQueue, QueueConfirmer},
+    session::{connect, connect_with, ClientMode, Confirmer, Outcome, Session},
     trust::{TrustStore, TrustedPeer},
 };
 use tokio::{net::TcpStream, sync::Mutex};
@@ -43,6 +44,24 @@ pub struct PeerSummary {
     /// On a connection: what the host allows this device to do (`view`, `input`, `media`,
     /// `power`, `files`).
     pub permissions: Vec<String>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct EmojiItem {
+    pub symbol: String,
+    pub name: String,
+}
+
+/// Pairing asks the person to compare these symbols with the computer's screen.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct VerifyPrompt {
+    pub id: u64,
+    pub peer_name: String,
+    pub peer_platform: String,
+    pub peer_fingerprint: String,
+    pub emoji: Vec<EmojiItem>,
+    /// The same string as digits, `0000-0000-00000`.
+    pub digits: String,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -127,6 +146,7 @@ pub struct Device {
     paths: Paths,
     identity: Arc<Identity>,
     name: String,
+    prompts: Arc<PromptQueue>,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -141,6 +161,7 @@ impl Device {
             paths,
             identity: Arc::new(identity),
             name,
+            prompts: PromptQueue::new(),
         }))
     }
 
@@ -184,6 +205,68 @@ impl Device {
             }),
             Outcome::Authenticated(_) => Err(fail("unexpected session while pairing")),
         }
+    }
+
+    /// Like `pair`, but also asks the person to compare symbols with the computer. While
+    /// this runs, poll `pending_prompt`, show it, and call `answer_prompt`. The computer is
+    /// only stored if both people say the symbols match.
+    pub async fn pair_verified(
+        &self,
+        address: String,
+        code: String,
+    ) -> Result<PeerSummary, TetherError> {
+        let mut store = self.store()?;
+        let stream = dial(&address).await?;
+        let person = QueueConfirmer {
+            queue: self.prompts.clone(),
+            ask_connections: false,
+            ask_verification: true,
+        };
+        match connect_with(
+            stream,
+            &self.identity,
+            &mut store,
+            &self.name,
+            ClientMode::Pair { code },
+            Some(&person as &dyn Confirmer),
+        )
+        .await
+        .map_err(fail)?
+        {
+            Outcome::Paired(peer) => Ok(PeerSummary {
+                name: peer.name.clone(),
+                platform: peer.platform.to_string(),
+                fingerprint: peer.fingerprint(),
+                permissions: vec![],
+            }),
+            Outcome::Authenticated(_) => Err(fail("unexpected session while pairing")),
+        }
+    }
+
+    /// The comparison waiting for the person, if any.
+    pub fn pending_prompt(&self) -> Option<VerifyPrompt> {
+        let p = self
+            .prompts
+            .pending()
+            .into_iter()
+            .find(|p| p.kind == PromptKind::Verify)?;
+        Some(VerifyPrompt {
+            id: p.id,
+            peer_name: p.peer_name,
+            peer_platform: p.peer_platform,
+            peer_fingerprint: p.peer_fingerprint,
+            emoji: p
+                .emoji
+                .into_iter()
+                .map(|(symbol, name)| EmojiItem { symbol, name })
+                .collect(),
+            digits: p.digits,
+        })
+    }
+
+    /// False if the question already timed out.
+    pub fn answer_prompt(&self, id: u64, accept: bool) -> bool {
+        self.prompts.answer(id, accept)
     }
 
     /// Opens a session with a host this phone has paired with.
