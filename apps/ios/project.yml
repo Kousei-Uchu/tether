@@ -35,6 +35,8 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSLocalNetworkUsageDescription: Tether connects to your own computers on your local network.
+        NSBonjourServices:
+          - _tether._tcp
         NSCameraUsageDescription: The camera scans the QR code a computer shows to pair with it.
     settings:
       base:

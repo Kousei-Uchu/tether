@@ -81,6 +81,8 @@ tether clip send <host-address> some text      # or: echo text | tether clip sen
 tether clip get <host-address>
 ```
 
+To find computers without typing an address: a host announces itself on the local network (Bonjour, service `_tether._tcp`) while it is accepting connections, unless you pass `--no-advertise` to `tether listen`. **Look for devices** on the desktop's Computers page, `tether discover`, and the iPhone's "On this network" list show what is there and which you have paired. If a computer you know has changed address, **Connect** (and the iPhone's tap-to-connect) looks for it by fingerprint and uses the new address; from the terminal, `tether quick <name-or-fingerprint>` does the same. The announcement carries the device name, platform and public key, and is not trusted: connecting still verifies the key in the handshake. Some routers block multicast between Wi-Fi and Ethernet; connect by address then. The iPhone asks for Local Network access the first time.
+
 Platform notes for the host:
 
 - macOS also asks for Screen Recording the first time a viewer connects. Allow it under System Settings, Privacy & Security, Screen Recording, then restart Tether.

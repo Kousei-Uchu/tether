@@ -2,6 +2,7 @@
 
 pub mod channel;
 pub mod clipboard;
+pub mod discovery;
 pub mod identity;
 pub mod input;
 pub mod link;

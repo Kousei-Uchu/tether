@@ -403,6 +403,7 @@ phone, with controls following permission changes live.
 | D-21 | The phone is a controller only for now, and disconnects when backgrounded | iOS suspends sockets in the background, so a clean disconnect beats a dead session. Viewing needs screen capture first | Accepted |
 | D-22 | Clipboard sharing is pull and push by hand, with its own host switch on top of `files` | A clipboard often holds passwords, so reading it needs two opt-ins, like remote control (D-16). Automatic sync would leak whatever is copied next, and needs echo-loop handling, so it waits | Accepted |
 | D-23 | macOS keys are sent as raw virtual key codes, never looked up by character | The layout lookup is main-thread only and aborts the process elsewhere. Physical positions are also what the protocol means | Accepted |
+| D-24 | Discovery is mDNS (`_tether._tcp`) with the public key in TXT, and nothing in it is trusted | A spoofed announcement can only make a connection fail, because the Noise handshake checks the real key. Desktops use the `mdns-sd` crate; iPhones use the system Bonjour API, since raw multicast needs an Apple entitlement. Quick connect is discovery plus the address the client already saved | Accepted |
 
 ## 8. Open questions
 
@@ -416,6 +417,7 @@ phone, with controls following permission changes live.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-25 | Device discovery (mDNS advertise, scan, identify) and quick connect to paired devices whose address changed. No protocol change |
 | 2026-10-25 | Step 17: macOS crash hardening (raw key codes, panic guard, crash log) |
 | 2026-10-23 | M8a: clipboard text sync, by hand, both directions. Protocol version 5 |
 | 2026-10-23 | M3c started: software screen capture and display choice (Linux verified). Packaging scripts and release workflow for all platforms |

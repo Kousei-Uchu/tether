@@ -18,6 +18,7 @@ use std::{
 };
 use tether_clipboard::SystemClipboard;
 use tether_core::{
+    discovery,
     identity::Identity,
     link::{with_default_port, PairingLink},
     pairing::PairingOffer,
@@ -118,6 +119,20 @@ pub struct PeerSummary {
     /// On a trust list: what the device may do here. On a connection: what the host
     /// allows this device to do.
     pub permissions: Vec<String>,
+}
+
+/// A device seen on the local network. Nothing here is authenticated; `paired` only says
+/// the advertised key is one this device has paired with.
+#[napi(object)]
+pub struct NearbyDevice {
+    pub name: String,
+    pub platform: String,
+    pub fingerprint: String,
+    /// `host:port`, IPv4 first.
+    pub addresses: Vec<String>,
+    pub paired: bool,
+    /// False if it speaks a different protocol version and so cannot connect.
+    pub compatible: bool,
 }
 
 #[napi(object)]
@@ -357,6 +372,69 @@ impl Device {
         }
     }
 
+    /// Looks for Tether devices on the local network for `seconds` (default 3, at most 15).
+    #[napi]
+    pub async fn discover(&self, seconds: Option<u32>) -> Result<Vec<NearbyDevice>> {
+        let store = self.store()?;
+        let secs = u64::from(seconds.unwrap_or(3).clamp(1, 15));
+        let found = discovery::scan(Duration::from_secs(secs), Some(self.identity.public))
+            .await
+            .map_err(err)?;
+        Ok(found
+            .into_iter()
+            .map(|d| NearbyDevice {
+                paired: discovery::identify(&d, &store).is_some(),
+                compatible: d.compatible(),
+                addresses: d.addresses.iter().map(|a| a.to_string()).collect(),
+                name: d.name,
+                platform: d.platform,
+                fingerprint: d.fingerprint,
+            })
+            .collect())
+    }
+
+    /// Finds a paired host on the network by fingerprint and opens a session with it. For
+    /// when its saved address no longer works. The returned connection's `address` is where
+    /// it was found.
+    #[napi]
+    pub async fn quick_connect(&self, fingerprint: String) -> Result<Connection> {
+        let mut store = self.store()?;
+        let wanted = store
+            .peers()
+            .iter()
+            .find(|p| p.fingerprint() == fingerprint)
+            .map(|p| p.public_key.clone())
+            .ok_or_else(|| err("that device is not paired with this one"))?;
+        let device = discovery::find(&fingerprint, Duration::from_secs(5), Some(self.identity.public))
+            .await
+            .map_err(err)?
+            .ok_or_else(|| err("could not find that device on the network"))?;
+        if hex::encode(device.public_key) != wanted {
+            return Err(err("could not find that device on the network"));
+        }
+        let (stream, addr) = discovery::dial(&device, Duration::from_secs(4))
+            .await
+            .map_err(|e| err(format!("found the device but could not connect: {e}")))?;
+        match connect(
+            stream,
+            &self.identity,
+            &mut store,
+            &self.name,
+            ClientMode::Connect,
+        )
+        .await
+        .map_err(err)?
+        {
+            Outcome::Authenticated(session) => {
+                if hex::encode(session.peer.public_key) != wanted {
+                    return Err(err("the device at that address is not the one you asked for"));
+                }
+                Ok(Connection::new(session, addr.to_string()))
+            }
+            Outcome::Paired(_) => Err(err("unexpected pairing result")),
+        }
+    }
+
     /// Opens an authenticated session with a paired host.
     #[napi]
     pub async fn connect(&self, address: String) -> Result<Connection> {
@@ -372,7 +450,9 @@ impl Device {
         .await
         .map_err(err)?
         {
-            Outcome::Authenticated(session) => Ok(Connection::new(session)),
+            Outcome::Authenticated(session) => {
+                Ok(Connection::new(session, with_default_port(address.trim())))
+            }
             Outcome::Paired(_) => Err(err("unexpected pairing result")),
         }
     }
@@ -396,6 +476,7 @@ impl Device {
         clipboard: Option<bool>,
         audio: Option<String>,
         wake: Option<Vec<String>>,
+        advertise: Option<bool>,
     ) -> Result<HostHandle> {
         let offer = match pairing {
             None => None,
@@ -450,12 +531,36 @@ impl Device {
         let events = Arc::new(StdMutex::new(VecDeque::new()));
         let (stop, stop_rx) = watch::channel(false);
 
+        // Announce on the local network unless told not to. Failing to do so (no network,
+        // blocked multicast) must not stop the host from working.
+        let advert = if advertise.unwrap_or(true) {
+            let port = listener.local_addr().map_err(err)?.port();
+            match discovery::Advertiser::start(
+                &self.name,
+                &self.identity.public,
+                tether_core::proto::Platform::current(),
+                port,
+            ) {
+                Ok(a) => {
+                    push(&events, "info", format!("Visible to nearby devices as {}", a.instance()));
+                    Some(a)
+                }
+                Err(e) => {
+                    push(&events, "info", format!("Not visible to nearby devices: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         tokio::spawn(accept_loop(listener, host, events.clone(), stop_rx));
         Ok(HostHandle {
             address,
             code,
             events,
             stop,
+            advert: StdMutex::new(advert),
         })
     }
 }
@@ -486,10 +591,11 @@ pub struct Connection {
     peer: PeerSummary,
     permissions: Arc<StdMutex<Vec<String>>>,
     nonce: AtomicU64,
+    address: String,
 }
 
 impl Connection {
-    fn new(session: Session<TcpStream>) -> Self {
+    fn new(session: Session<TcpStream>, address: String) -> Self {
         let perms = names(session.permissions);
         let peer = PeerSummary {
             name: session.peer.name.clone(),
@@ -502,12 +608,19 @@ impl Connection {
             peer,
             permissions: Arc::new(StdMutex::new(perms)),
             nonce: AtomicU64::new(0),
+            address,
         }
     }
 }
 
 #[napi]
 impl Connection {
+    /// The `host:port` this session is connected to.
+    #[napi(getter)]
+    pub fn address(&self) -> String {
+        self.address.clone()
+    }
+
     #[napi(getter)]
     pub fn peer(&self) -> PeerSummary {
         self.peer.clone()
@@ -704,6 +817,8 @@ pub struct HostHandle {
     code: Option<String>,
     events: Arc<StdMutex<VecDeque<(String, String)>>>,
     stop: watch::Sender<bool>,
+    /// Dropping this withdraws the network announcement.
+    advert: StdMutex<Option<discovery::Advertiser>>,
 }
 
 #[napi]
@@ -732,6 +847,7 @@ impl HostHandle {
     /// Stops accepting and closes open sessions.
     pub fn stop(&self) {
         self.stop.send_replace(true);
+        self.advert.lock().expect("advert lock").take();
     }
 }
 

@@ -84,6 +84,10 @@ enum Cmd {
         /// hold the power permission can then wake them with `tether wake`.
         #[arg(long = "wake", value_name = "NAME=MAC[@BROADCAST]")]
         wake: Vec<String>,
+        /// Do not announce this device on the local network. Other devices will then need
+        /// its address to connect.
+        #[arg(long)]
+        no_advertise: bool,
     },
     /// Ask a paired host that is a wake relay to wake one of its computers.
     Wake {
@@ -103,6 +107,20 @@ enum Cmd {
         addr: String,
         #[arg(long)]
         code: String,
+    },
+    /// List Tether devices visible on the local network, and which of them you have paired.
+    Discover {
+        /// How long to look, in seconds.
+        #[arg(long, default_value_t = 4)]
+        secs: u64,
+    },
+    /// Connect to a paired host by name or fingerprint, finding it on the network. Works
+    /// even if its address has changed.
+    Quick {
+        /// The host's name, or the start of its fingerprint (see `tether peers list`).
+        target: String,
+        #[arg(long, default_value_t = 5)]
+        pings: u32,
     },
     /// Open an authenticated session to a paired host and measure round trip time.
     Connect {
@@ -277,6 +295,7 @@ async fn run() -> Result<()> {
             input,
             clipboard,
             wake,
+            no_advertise,
         } => {
             listen(
                 ctx,
@@ -289,9 +308,12 @@ async fn run() -> Result<()> {
                 input,
                 clipboard,
                 wake,
+                !no_advertise,
             )
             .await
         }
+        Cmd::Discover { secs } => discover(ctx, secs).await,
+        Cmd::Quick { target, pings } => quick(ctx, &target, pings).await,
         Cmd::Wake { addr, target } => wake_via(ctx, &addr, &target).await,
         Cmd::Clip { action } => clip(ctx, action).await,
         Cmd::Pair { addr, code } => pair_with(ctx, &addr, code).await,
@@ -390,7 +412,10 @@ async fn listen(
     input: bool,
     clipboard: bool,
     wake: Vec<String>,
+    advertise: bool,
 ) -> Result<()> {
+    let own_key = ctx.identity.public;
+    let own_name = ctx.name.clone();
     let relay = if wake.is_empty() {
         None
     } else {
@@ -440,6 +465,26 @@ async fn listen(
         .await
         .with_context(|| format!("could not bind {bind}"))?;
     println!("listening    {}", listener.local_addr()?);
+    // Held until this function returns, which withdraws the announcement.
+    let _advert = if advertise {
+        match tether_core::discovery::Advertiser::start(
+            &own_name,
+            &own_key,
+            tether_core::proto::Platform::current(),
+            listener.local_addr()?.port(),
+        ) {
+            Ok(a) => {
+                println!("visible as   {}", a.instance());
+                Some(a)
+            }
+            Err(e) => {
+                tracing::warn!("not announcing on the network: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let limit = Arc::new(Semaphore::new(16));
 
     loop {
@@ -596,8 +641,19 @@ async fn clip(ctx: Ctx, action: ClipAction) -> Result<()> {
 }
 
 async fn connect_to(ctx: Ctx, addr: &str, pings: u32) -> Result<()> {
-    let mut trust = TrustStore::load(ctx.paths.trust_file())?;
     let stream = dial(addr).await?;
+    run_session(ctx, stream, pings, None).await
+}
+
+/// Opens a session on `stream` and pings. `expect` is the key the host must hold; a
+/// different (but still trusted) host is refused.
+async fn run_session(
+    ctx: Ctx,
+    stream: TcpStream,
+    pings: u32,
+    expect: Option<[u8; 32]>,
+) -> Result<()> {
+    let mut trust = TrustStore::load(ctx.paths.trust_file())?;
     let Outcome::Authenticated(mut session) = connect(
         stream,
         &ctx.identity,
@@ -609,6 +665,10 @@ async fn connect_to(ctx: Ctx, addr: &str, pings: u32) -> Result<()> {
     else {
         bail!("unexpected pairing result");
     };
+    if expect.is_some_and(|k| k != session.peer.public_key) {
+        let _ = session.bye("wrong device").await;
+        bail!("the device at that address is not the one you asked for");
+    }
     println!(
         "connected to {} ({}) {}",
         session.peer.name,
@@ -622,4 +682,57 @@ async fn connect_to(ctx: Ctx, addr: &str, pings: u32) -> Result<()> {
     }
     session.bye("done").await?;
     Ok(())
+}
+
+async fn discover(ctx: Ctx, secs: u64) -> Result<()> {
+    let trust = TrustStore::load(ctx.paths.trust_file())?;
+    let found = tether_core::discovery::scan(
+        Duration::from_secs(secs.clamp(1, 60)),
+        Some(ctx.identity.public),
+    )
+    .await?;
+    if found.is_empty() {
+        println!("no Tether devices found (is the other one running `tether listen`?)");
+    }
+    for d in found {
+        let state = match tether_core::discovery::identify(&d, &trust) {
+            Some(_) => "paired",
+            None => "not paired",
+        };
+        let note = if d.compatible() { "" } else { "  (different protocol version)" };
+        println!("{}  {}  {}  {state}{note}", d.name, d.platform, d.fingerprint);
+        for a in &d.addresses {
+            println!("    {a}");
+        }
+    }
+    Ok(())
+}
+
+async fn quick(ctx: Ctx, target: &str, pings: u32) -> Result<()> {
+    let trust = TrustStore::load(ctx.paths.trust_file())?;
+    let mut matches = trust.peers().iter().filter(|p| p.matches(target));
+    let Some(peer) = matches.next() else {
+        bail!("no paired device matches {target:?} (see `tether peers list`)");
+    };
+    if matches.next().is_some() {
+        bail!("more than one paired device matches {target:?}; use more of its fingerprint");
+    }
+    let fingerprint = peer.fingerprint();
+    let key: [u8; 32] = hex::decode(&peer.public_key)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("the stored key for {} is damaged", peer.name))?;
+    let name = peer.name.clone();
+    println!("looking for {name} on the network...");
+    let device = tether_core::discovery::find(
+        &fingerprint,
+        Duration::from_secs(6),
+        Some(ctx.identity.public),
+    )
+    .await?
+    .with_context(|| format!("{name} did not answer; is it running `tether listen`?"))?;
+    let (stream, addr) = tether_core::discovery::dial(&device, Duration::from_secs(4))
+        .await
+        .with_context(|| format!("found {name} but could not connect"))?;
+    println!("found at     {addr}");
+    run_session(ctx, stream, pings, Some(key)).await
 }

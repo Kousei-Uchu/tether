@@ -150,7 +150,12 @@ function validPermissions(list) {
 
 function connectionState() {
   if (!connection) return { connected: false };
-  return { connected: true, peer: connection.peer, permissions: connection.permissions };
+  return {
+    connected: true,
+    peer: connection.peer,
+    permissions: connection.permissions,
+    address: connection.address,
+  };
 }
 
 function registerIpc() {
@@ -172,6 +177,14 @@ function registerIpc() {
     closeViewers();
     if (connection) await connection.close().catch(() => {});
     connection = await device.connect(String(address));
+    return connectionState();
+  });
+  handle('discover', (seconds) => device.discover(Number(seconds) || 3));
+  handle('connect:quick', async (fingerprint) => {
+    closeViewers();
+    if (connection) await connection.close().catch(() => {});
+    connection = null;
+    connection = await device.quickConnect(String(fingerprint));
     return connectionState();
   });
   handle('disconnect', async () => {

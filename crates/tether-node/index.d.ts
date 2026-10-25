@@ -6,6 +6,19 @@ export interface PeerSummary {
   permissions: string[];
 }
 
+/** A device seen on the local network. Nothing here is authenticated. */
+export interface NearbyDevice {
+  name: string;
+  platform: string;
+  fingerprint: string;
+  /** `host:port`, IPv4 first. */
+  addresses: string[];
+  /** The advertised key is one this device has paired with. */
+  paired: boolean;
+  /** False if it speaks a different protocol version. */
+  compatible: boolean;
+}
+
 export interface PairingOptions {
   /** Permissions for the device that pairs with the code. Defaults to ["view"]. */
   grant?: string[];
@@ -56,6 +69,10 @@ export class Device {
   remove(query: string): number;
   pair(address: string, code: string): Promise<PeerSummary>;
   connect(address: string): Promise<Connection>;
+  /** Looks for Tether devices on the local network for `seconds` (default 3, at most 15). */
+  discover(seconds?: number | null): Promise<NearbyDevice[]>;
+  /** Finds a paired host by fingerprint and connects, for when its saved address stopped working. */
+  quickConnect(fingerprint: string): Promise<Connection>;
   /** `video` lets permitted devices watch a stream: "test-pattern", "screen" or "screen:<id>" (see listDisplays). */
   /** `input: true` lets devices with the "input" permission control this computer. Off by default. */
   /** `clipboard: true` lets devices with the "files" permission read and replace this computer's clipboard text. Off by default. */
@@ -69,10 +86,14 @@ export class Device {
     audio?: string | null,
     /** Makes this a wake relay: each entry is "name=MAC" or "name=MAC@broadcast". */
     wake?: string[] | null,
+    /** Announce this device on the local network. Defaults to true. */
+    advertise?: boolean | null,
   ): Promise<HostHandle>;
 }
 
 export class Connection {
+  /** The `host:port` this session is connected to. */
+  readonly address: string;
   readonly peer: PeerSummary;
   /** What the host currently allows this device to do. Refreshed by ping(). */
   readonly permissions: string[];

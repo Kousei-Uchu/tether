@@ -242,6 +242,8 @@ details.advanced > :last-child { margin-bottom: 18px; }
 .welcome-steps > div { display: flex; gap: 12px; align-items: flex-start; }
 .step-n { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 12px; display: grid; place-items: center; margin-top: 1px; }
 .computers { display: grid; gap: 10px; margin-bottom: 18px; }
+#nearby { display: grid; gap: 10px; }
+#nearby:not(:empty) { margin-bottom: 10px; }
 .computer {
   display: flex;
   align-items: center;

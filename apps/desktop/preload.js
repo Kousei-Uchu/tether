@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('tether', {
   parseLink: (text) => call('link:parse', text),
   pair: (address, code) => call('pair', address, code),
   connect: (address) => call('connect', address),
+  discover: (seconds) => call('discover', seconds),
+  connectQuick: (fingerprint) => call('connect:quick', fingerprint),
   disconnect: () => call('disconnect'),
   pollConnection: () => call('connection:poll'),
   requestVideo: (offer) => call('media:offer', offer),

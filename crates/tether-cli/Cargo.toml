@@ -16,6 +16,7 @@ tether-input.workspace = true
 tether-clipboard.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+hex.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -33,6 +33,7 @@ enigo = "0.6"
 gethostname = "0.5"
 hex = "0.4"
 hmac = "0.12"
+mdns-sd = "0.11"
 openh264 = "0.9"
 postcard = { version = "1", features = ["use-std"] }
 rand = "0.8"

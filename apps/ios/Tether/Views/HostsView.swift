@@ -4,6 +4,7 @@ import SwiftUI
 struct HostsView: View {
     @EnvironmentObject var model: AppModel
     @State private var showPairing = false
+    @StateObject private var discovery = HostDiscovery()
 
     var body: some View {
         NavigationStack {
@@ -39,6 +40,18 @@ struct HostsView: View {
                     }
                 }
 
+                if !discovery.nearby.isEmpty {
+                    Section {
+                        ForEach(discovery.nearby) { nearby in
+                            nearbyRow(nearby)
+                        }
+                    } header: {
+                        Text("On this network")
+                    } footer: {
+                        Text("Computers running Tether on the same Wi-Fi. To pair a new one, scan its QR code.")
+                    }
+                }
+
                 Section {
                     Label(model.phoneName, systemImage: "iphone")
                     Text(model.fingerprint)
@@ -51,6 +64,8 @@ struct HostsView: View {
                     Text("Computers show this code when you pair, so you can check it is really your phone.")
                 }
             }
+            .onAppear { discovery.start() }
+            .onDisappear { discovery.stop() }
             .navigationTitle("Tether")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -67,6 +82,38 @@ struct HostsView: View {
                     .environmentObject(model)
             }
         }
+    }
+
+    @ViewBuilder
+    private func nearbyRow(_ nearby: NearbyHost) -> some View {
+        let saved = model.hosts.first { $0.fingerprint == nearby.fingerprint }
+        Button {
+            guard var host = saved else { return }
+            if let address = nearby.address { host.address = address }
+            Haptics.tap()
+            Task { await model.connect(to: host) }
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(nearby.name)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text([nearby.platform, saved == nil ? "Not paired" : "Paired"]
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " · "))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if saved != nil {
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .disabled(model.isBusy || saved == nil)
     }
 
     private var emptyState: some View {

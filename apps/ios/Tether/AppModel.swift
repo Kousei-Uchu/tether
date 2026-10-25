@@ -30,6 +30,7 @@ final class AppModel: ObservableObject {
     @Published var startupError: String?
 
     private var device: Device?
+    private let discovery = HostDiscovery()
     private var connection: Connection?
     private var keepAlive: Task<Void, Never>?
     private var inputTask: Task<Void, Never>?
@@ -131,16 +132,32 @@ final class AppModel: ObservableObject {
 
     // MARK: - Session
 
-    func connect(to host: SavedHost) async {
+    func connect(to saved: SavedHost) async {
         guard let device else { return }
+        var host = saved
         disconnect()
         phase = .working("Connecting to \(host.name)...")
         do {
-            let c = try await device.connect(address: host.address)
+            let c: Connection
+            do {
+                c = try await device.connect(address: host.address)
+            } catch {
+                // The saved address may be out of date, so look for the computer on the
+                // network. If it is not there, report the original failure.
+                phase = .working("Looking for \(host.name) on the network...")
+                guard let found = await discovery.find(fingerprint: host.fingerprint, timeout: 5),
+                      found != host.address else { throw error }
+                c = try await device.connect(address: found)
+                host.address = found
+            }
             guard c.peer().fingerprint == host.fingerprint else {
                 try? await c.close()
                 phase = .failed("That is not the computer you paired with.")
                 return
+            }
+            if let i = hosts.firstIndex(where: { $0.id == host.id }), hosts[i].address != host.address {
+                hosts[i] = host
+                saveHosts()
             }
             connection = c
             active = host

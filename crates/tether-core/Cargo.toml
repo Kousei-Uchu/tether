@@ -20,5 +20,8 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+mdns-sd.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true

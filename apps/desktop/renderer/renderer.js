@@ -480,9 +480,24 @@ $('connect-btn').addEventListener('click', () =>
   guarded('connect-msg', async () => {
     const address = $('address').value.trim();
     if (!address) throw new Error('Enter the address of the device.');
-    const state = await window.tether.connect(address);
+    let state;
+    try {
+      state = await window.tether.connect(address);
+    } catch (e) {
+      // The saved address may be stale. If this is a computer we know, look for it on the
+      // network instead.
+      const known = loadComputers().find((c) => c.address === address && c.fingerprint);
+      if (!known) throw e;
+      say('connect-msg', `Could not reach ${known.name} at ${address}. Looking for it on the network...`);
+      try {
+        state = await window.tether.connectQuick(known.fingerprint);
+      } catch {
+        throw new Error(`Could not reach ${known.name} at ${address}, and could not find it on the network either.`);
+      }
+      $('address').value = state.address;
+    }
     if (state.connected) {
-      rememberComputer({ name: state.peer.name, platform: state.peer.platform, fingerprint: state.peer.fingerprint, address });
+      rememberComputer({ name: state.peer.name, platform: state.peer.platform, fingerprint: state.peer.fingerprint, address: state.address || address });
     }
     showConnection(state);
     startPolling();
@@ -689,3 +704,46 @@ setInterval(async () => {
   restoreHostSettings();
   await guarded('peers-msg', renderPeers);
 })();
+
+// ----- computers on this network -----
+$('scan-btn').addEventListener('click', () =>
+  guarded('nearby-msg', async () => {
+    const btn = $('scan-btn');
+    btn.disabled = true;
+    say('nearby-msg', 'Looking...');
+    try {
+      const found = await window.tether.discover(3);
+      say('nearby-msg', found.length ? '' : 'No other Tether devices found. Is it sharing, on the same network?');
+      $('nearby').replaceChildren(
+        ...found.map((d) => {
+          const address = d.addresses[0] ?? '';
+          const action = el('button', {
+            className: d.paired ? 'primary' : '',
+            textContent: d.paired ? 'Connect' : 'Pair...',
+            disabled: !d.compatible || !address,
+            title: d.compatible ? '' : 'It runs a different version of Tether.',
+          });
+          action.addEventListener('click', () => {
+            $('address').value = address;
+            if (d.paired) $('connect-btn').click();
+            else $('code').focus();
+          });
+          return el(
+            'div',
+            { className: 'computer' },
+            el('div', { className: 'avatar', textContent: (d.name.trim()[0] ?? '?').toUpperCase(), ariaHidden: 'true' }),
+            el(
+              'div',
+              { className: 'computer-text' },
+              el('div', { className: 'computer-name', textContent: d.name }),
+              el('div', { className: 'computer-sub', textContent: [d.platform, address, d.paired ? 'paired' : 'not paired'].filter(Boolean).join(' \u00b7 ') }),
+            ),
+            el('div', { className: 'computer-actions' }, action),
+          );
+        }),
+      );
+    } finally {
+      btn.disabled = false;
+    }
+  }),
+);
